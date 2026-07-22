@@ -26,10 +26,12 @@ module Narsil.LSP.Handlers.Cursor (
 )
 where
 
+import Control.Applicative ((<|>))
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe, maybeToList)
 import Data.Text (Text)
+import Data.Text qualified as T
 import Narsil.Core.Span (Loc (..), Span (..))
 import Narsil.Inference.Nix (TypeEnv, builtinEnv, inferExprWithEnv)
 import Narsil.Inference.Nix qualified as Infer
@@ -37,6 +39,7 @@ import Narsil.Inference.Nix.Type qualified as NT
 import Narsil.Syntax.Annotation (srcSpanToSpan, varNameText, pattern Layer, pattern LayerAnn)
 import Nix.Expr.Types (Binding (..), NExprF (..), NKeyName (..), Params (..))
 import Nix.Expr.Types.Annotated (NExprLoc)
+import Nix.Expr.Types.Annotated qualified as Nix
 
 -- | The smallest expression whose span contains the editor (line, col), if any.
 findExprAt :: Int -> Int -> NExprLoc -> Maybe NExprLoc
@@ -106,24 +109,71 @@ inferExprAt = inferExprAtWithEnv builtinEnv
 
 {- | Pretty type of the expression at the cursor, inferred against @env@. Prefers
   the binding type when the cursor names a let/attr binding; falls back to
-  inferring the target sub-expression. Yields @"TYPE_ERROR"@ on inference failure.
+  inferring the target sub-expression. A type error ELSEWHERE in the file does
+  not blank the healthy bindings: on whole-file failure the PARTIAL bindings
+  (everything typed before the error point) answer instead — only hovering
+  the broken expression itself yields @"TYPE_ERROR"@.
 -}
 inferExprAtWithEnv :: TypeEnv -> NExprLoc -> Int -> Int -> Maybe Text
 inferExprAtWithEnv env expr l c = do
   target <- findExprAt l c expr
-  either (const (inferTarget' target)) (fromBindings target) (inferExprWithEnv env expr)
+  let bindings =
+        either
+          (const (Infer.inferExprBindingsPartial env expr))
+          snd
+          (inferExprWithEnv env expr)
+  fromBindings target bindings
  where
-  fromBindings target (_, bindings) =
-    maybe (inferTarget' target) (fromName target bindings) (exprName target)
-  fromName target bindings name =
-    maybe (inferTarget' target) namedType (find (\(Infer.Binding n _ _) -> n == name) bindings)
+  -- three chances before giving up: the target's NAME in the bindings, the
+  -- cursor sitting ON a binding-name token (a name is not an expression, so
+  -- 'findExprAt' returns the enclosing node there — the SPAN match is what
+  -- makes hover-on-the-binding work), then inferring the sub-expression.
+  -- four chances before conceding TYPE_ERROR: the target's NAME among the
+  -- (possibly partial) bindings; the cursor ON a binding-name token (names
+  -- are not expressions, so 'findExprAt' returns the enclosing node there);
+  -- the binding's VALUE inferred in isolation (a binding downstream of an
+  -- unrelated error never entered the partial bindings — its own value may
+  -- still type fine); finally the sub-expression at the cursor.
+  fromBindings target bindings =
+    maybe viaValue (Just . namedType) (byName <|> bySpan)
    where
-    namedType (Infer.Binding _ t _sp) = Just (NT.prettyType t)
+    byName = do
+      name <- exprName target
+      find (\(Infer.Binding n _ _) -> n == name) bindings
+    bySpan =
+      find
+        ( \(Infer.Binding n _ sp) ->
+            let Loc bl bc = spanStart sp
+             in bl == l + 1 && c + 1 >= bc && c + 1 <= bc + T.length n
+        )
+        bindings
+    namedType (Infer.Binding _ t _sp) = NT.prettyType t
+    viaValue =
+      maybe (inferTarget' target) inferTarget' (bindingValueAt (l + 1) (c + 1) expr)
   inferTarget' te =
     either
       (const (Just "TYPE_ERROR"))
       (\(t, _) -> Just (NT.prettyType t))
-      (inferExprWithEnv builtinEnv te)
+      (inferExprWithEnv env te)
+
+{- | The VALUE expression of the let\/attrset binding whose NAME token
+contains the 1-based cursor — the thing to infer when the cursor sits on a
+binding name that the (partial) binding list does not cover.
+-}
+bindingValueAt :: Int -> Int -> NExprLoc -> Maybe NExprLoc
+bindingValueAt cl cc = go
+ where
+  go node@(Layer e) = listToMaybe (here e) <|> listToMaybe (mapMaybe go (childExprs (unwrap node)))
+  unwrap (LayerAnn _ e) = e
+  here (NLet bindings _) = mapMaybe named bindings
+  here (NSet _ bindings) = mapMaybe named bindings
+  here _ = []
+  named (NamedVar (StaticKey k :| []) v pos) =
+    let Loc bl bc = spanStart (posToSpan' pos)
+        n = varNameText k
+     in if bl == cl && cc >= bc && cc <= bc + T.length n then Just v else Nothing
+  named _ = Nothing
+  posToSpan' p = srcSpanToSpan (Nix.SrcSpan p p)
 
 {- | The identifier an expression refers to: a bare symbol or the final
   static key of a select. 'Nothing' for anything else.

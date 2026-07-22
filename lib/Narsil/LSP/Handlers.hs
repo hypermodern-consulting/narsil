@@ -504,7 +504,7 @@ definitionHandler req responder = do
      in responder $ Right $ InL (Definition (InL loc))
   resolveRef uri sg ref = either (const nullResp) (emitDecl uri) (Scope.resolve sg ref)
   emitDecl uri decl =
-    let declUri = maybe uri filePathToUri (Scope.spanFile (Scope.declSpan decl))
+    let declUri = spanFileUri uri (Scope.spanFile (Scope.declSpan decl))
         loc =
           Location
             declUri
@@ -588,7 +588,7 @@ referencesHandler req responder = do
         refLocs = map (refLoc uri) allRefs
      in responder $ Right $ InL (declLoc : refLocs)
   refLoc uri r =
-    let refUri = maybe uri filePathToUri (Scope.spanFile (Scope.refSpan r))
+    let refUri = spanFileUri uri (Scope.spanFile (Scope.refSpan r))
      in Location
           refUri
           ( Range
@@ -734,6 +734,14 @@ fullLint cfg env path txt
   -- profile-contributed, `off` ignores the world) the CLI walker honors
   | Profiles.isIgnored cfg path = []
   | otherwise = maybe [] (diagnosticsForExprWith cfg env path) (lspSafeParse txt)
+
+{- | A span's file as a URI — falling back to the REQUEST's uri for spans
+whose file is absent or the parser's buffer placeholder (an expression
+parsed from editor text carries @"<string>"@, which is not a path).
+-}
+spanFileUri :: Uri -> Maybe FilePath -> Uri
+spanFileUri _fallback (Just f) | f /= "<string>" = filePathToUri f
+spanFileUri fallback _ = fallback
 
 -- | The config + cross-env + path triple every diagnostics publish needs.
 diagCtx :: Uri -> LspM () (Cfg.Config, TypeEnv, FilePath)

@@ -47,6 +47,7 @@ import Language.LSP.Protocol.Types (
 import Narsil.Core.Config (Config (..), RuleOverride (..), Severity (..), defaultConfig)
 import Narsil.Inference.Nix (builtinEnv, inferExprWithEnv)
 import Narsil.LSP.Handlers qualified as Handlers
+import Narsil.LSP.Handlers.Cursor (inferExprAtWithEnv)
 import Narsil.LSP.Handlers.Diagnostics (diagnosticsForExpr)
 import Narsil.LSP.Handlers.Features (
   completionsForExpr,
@@ -273,6 +274,39 @@ refPos r =
   , Scope.posCol (Scope.spanStart (Scope.refSpan r))
   )
 
+{- | GUARD (test-drive regression): with the cursor on the BASE of a select
+(`my` in `my.host`), the attribute reference spanning the whole select must
+not shadow the variable under the cursor — narrowest span wins, and the
+result resolves to the declaration.
+-}
+testFindRefNarrowestWins :: IO Bool
+testFindRefNarrowestWins =
+  holds (fmap Scope.refName hit == Just "myServer" && resolves)
+ where
+  sg =
+    Scope.fromNixExpr
+      Nothing
+      (parse "let myServer = { host = 1; }; in myServer.host")
+  hit = findRef (1, 35) sg -- cursor inside `myServer` of `myServer.host`
+  resolves = case hit >>= either (const Nothing) Just . Scope.resolve sg of
+    Just d -> Scope.declName d == "myServer"
+    Nothing -> False
+
+{- | GUARD (test-drive regression): a type error elsewhere in the file does
+not blank hover for a HEALTHY binding — partial bindings answer.
+-}
+testHoverSurvivesTypeError :: IO Bool
+testHoverSurvivesTypeError =
+  holds
+    ( inferExprAtWithEnv builtinEnv broken 0 4 == Just "Int"
+        -- `after` sits DOWNSTREAM of the error in inference order, so the
+        -- partial bindings never reach it — its own value answers instead
+        && inferExprAtWithEnv builtinEnv broken 0 29 == Just "Int"
+        && inferExprAtWithEnv builtinEnv broken 0 14 /= Just "Int"
+    )
+ where
+  broken = parse "let good = 1; bad = 1 + \"s\"; after = 6 * 7; in good"
+
 -- | GUARD: the cursor on a USE of `x` resolves to a reference (nav works there).
 testFindRefAtUse :: IO Bool
 testFindRefAtUse =
@@ -333,6 +367,8 @@ lspFeatureTests =
   , ("lsp_completion_scoped_to_cursor", testCompletionScopedToCursor)
   , ("lsp_codeaction_rename_edit", testCodeActionRenameEdit)
   , ("lsp_nav_findref_at_use", testFindRefAtUse)
+  , ("lsp_nav_findref_narrowest_wins", testFindRefNarrowestWins)
+  , ("lsp_hover_survives_type_error", testHoverSurvivesTypeError)
   , ("lsp_nav_findreferences_enumerates", testFindReferencesEnumerates)
   , ("lsp_nav_findref_at_decl", testFindRefAtDecl)
   , ("lsp_nav_single_file_fallback_nonblocking", testNavSingleFileFallback)

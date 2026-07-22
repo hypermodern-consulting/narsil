@@ -46,7 +46,7 @@ where
 
 import Control.Applicative ((<|>))
 import Data.Char (isAlphaNum)
-import Data.List (nub)
+import Data.List (nub, sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
 import Data.Maybe (listToMaybe)
@@ -72,10 +72,25 @@ import Nix.Expr.Types.Annotated (NExprLoc)
   1-based @(line, col)@ cursor. The cursor ON a DECLARATION also resolves —
   as a self-reference at the binding site — so references/rename work from
   the place users most often invoke them.
+
+  Overlapping candidates are ranked NARROWEST-first (an attribute reference
+  spans its whole select — `myServer.hostname` — and must not shadow the
+  `myServer` variable under the cursor), with variable references preferred
+  over attribute references on equal extent.
 -}
 findRef :: (Int, Int) -> Scope.ScopeGraph -> Maybe Scope.Reference
-findRef (l, c) sg = listToMaybe (matchingRefs ++ matchingDecls)
+findRef (l, c) sg = listToMaybe (sortOn rank (matchingRefs ++ matchingDecls))
  where
+  rank r =
+    let sp = Scope.refSpan r
+        s = Scope.spanStart sp
+        e = Scope.spanEnd sp
+     in ( Scope.posLine e - Scope.posLine s
+        , Scope.posCol e - Scope.posCol s
+        , kindRank (Scope.refKind r)
+        )
+  kindRank Scope.VarRef = 0 :: Int
+  kindRank _ = 1
   matchingRefs =
     [ r
     | s <- Map.elems (Scope.sgScopes sg)
