@@ -44,7 +44,13 @@
               };
             };
 
-            narsil = haskell-packages.callCabal2nix "narsil" ./. { };
+            # Static cabal2nix output (packages/narsil/default.nix, checked in) — NOT
+            # callCabal2nix, which is import-from-derivation: IFD breaks
+            # `nix flake show`/`check` for foreign systems (evaluation would
+            # have to BUILD cabal2nix per system) and fails outright wherever
+            # allow-import-from-derivation is disabled. The cabal2nix-parity
+            # check below keeps the file honest against narsil.cabal.
+            narsil = haskell-packages.callPackage ./packages/narsil { };
           in
           {
             packages = {
@@ -54,6 +60,26 @@
 
             checks = {
               narsil-test = pkgs.haskell.lib.doCheck narsil;
+              # the static package expression must stay in sync with narsil.cabal:
+              # and diff. (`cabal2nix ./.` is a plain build here — no IFD.)
+              cabal2nix-parity =
+                pkgs.runCommandLocal "cabal2nix-parity"
+                  {
+                    nativeBuildInputs = [ pkgs.cabal2nix ];
+                  }
+                  ''
+                    export HOME=$TMPDIR
+                    cabal2nix ${./.} > generated.nix
+                    # `src` renders as a store path here vs `./.` in the
+                    # checked-in file — compare everything else
+                    grep -v '^  src = ' generated.nix > generated.filtered
+                    grep -v '^  src = ' ${./packages/narsil/default.nix} > reference.filtered
+                    if ! diff -u reference.filtered generated.filtered; then
+                      echo "narsil.nix is stale — regenerate with: cabal2nix . > packages/narsil/default.nix (src line is excluded from comparison)" >&2
+                      exit 1
+                    fi
+                    touch $out
+                  '';
             };
 
             treefmt = {
