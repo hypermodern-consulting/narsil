@@ -37,6 +37,7 @@ module Narsil.LSP.Handlers.Features (
   -- code actions
   rangeOverlapsDiag,
   violationAction,
+  violationActionIn,
   -- inlay hints
   inlayHintsForExpr,
   -- option lookup + hover fallbacks
@@ -448,7 +449,88 @@ complete rename: the declaration plus every reference, computed from the
 scope graph — apply-and-done, not a suggestion.
 -}
 violationAction :: Uri -> Maybe Scope.ScopeGraph -> Diagnostic -> [CodeAction]
-violationAction uri mSg diag
+violationAction = violationActionIn Nothing
+
+{- | 'violationAction' with the BUFFER TEXT: the fix-carrying tier. The
+checker's diagnostics know their repairs — a did-you-mean replaces the
+typo'd word, `+`-on-lists becomes `++`, `optionalString` fed a list becomes
+`optionals`, an unused binding deletes its line. Every textual edit is
+guarded on a single unambiguous occurrence in the diagnostic's line.
+-}
+violationActionIn :: Maybe Text -> Uri -> Maybe Scope.ScopeGraph -> Diagnostic -> [CodeAction]
+violationActionIn mTxt uri mSg diag
+  | Just sugg <- didYouMeanOf m
+  , Just wrong <- wrongNameOf m =
+      wordFix wrong sugg ("Rename to `" <> sugg <> "`")
+  | "operator `+` cannot combine [" `T.isInfixOf` m =
+      lineFix " + " " ++ " "Change `+` to `++`"
+  | "expected String, got [" `T.isInfixOf` m =
+      lineFix "optionalString" "optionals" "Use `optionals` (list passthrough)"
+  | "unused-binding:" `T.isInfixOf` m = deleteLineFix
+  | otherwise = violationKeyed uri mSg diag
+ where
+  m = diagMsg diag
+  Diagnostic{_range = Range (Position dl _) _} = diag
+  diagLine = mTxt >>= \t -> listToMaybe (drop (fromIntegral dl) (T.lines t))
+  didYouMeanOf t = do
+    rest <- afterText "did you mean '" t
+    let s = T.takeWhile (/= '\'') rest
+    if T.null s then Nothing else Just s
+  wrongNameOf t =
+    listToMaybe
+      ( mapMaybe
+          id
+          [ do
+              rest <- afterText "attribute '" t
+              let w = T.takeWhile (/= '\'') rest
+              if T.null w then Nothing else Just w
+          , do
+              rest <- afterText "unbound variable: " t
+              let w = T.takeWhile (`notElem` ("; " :: String)) rest
+              if T.null w then Nothing else Just w
+          ]
+      )
+  afterText pre t =
+    let (_, b) = T.breakOn pre t
+     in if T.null b then Nothing else Just (T.drop (T.length pre) b)
+  wordFix needle replacement title = lineFix needle replacement title
+  lineFix needle replacement title = maybe [] pure $ do
+    ln <- diagLine
+    if T.count needle ln == 1
+      then do
+        let (pre, _) = T.breakOn needle ln
+            col = fromIntegral (T.length pre)
+        Just
+          ( editAction
+              title
+              ( singleEdit
+                  (Range (Position dl col) (Position dl (col + fromIntegral (T.length needle))))
+                  replacement
+              )
+              diag
+          )
+      else Nothing
+  deleteLineFix = maybe [] pure $ do
+    ln <- diagLine
+    if ";" `T.isSuffixOf` T.stripEnd ln && "=" `T.isInfixOf` ln
+      then
+        Just
+          ( editAction
+              "Delete unused binding"
+              (singleEdit (Range (Position dl 0) (Position (dl + 1) 0)) "")
+              diag
+          )
+      else Nothing
+  singleEdit range newText =
+    WorkspaceEdit
+      { _changes = Just (Map.singleton uri [TextEdit range newText])
+      , _documentChanges = Nothing
+      , _changeAnnotations = Nothing
+      }
+
+-- | the rule-code-keyed actions (titles, plus the lisp-case rename edit)
+violationKeyed :: Uri -> Maybe Scope.ScopeGraph -> Diagnostic -> [CodeAction]
+violationKeyed uri mSg diag
   | "NARSIL-N001" `T.isInfixOf` msg = [simpleAction "Replace `with` by explicit bindings" True diag]
   | "NARSIL-N015" `T.isInfixOf` msg = renameAction
   | "NARSIL-N011" `T.isInfixOf` msg = [simpleAction "Use writeShellApplication instead" True diag]

@@ -41,6 +41,7 @@ import Language.LSP.Protocol.Types (
   DiagnosticSeverity (..),
   Position (..),
   Range (..),
+  TextEdit (..),
   WorkspaceEdit (..),
   filePathToUri,
  )
@@ -52,13 +53,14 @@ import Narsil.Inference.Nix.Module qualified as Module
 import Narsil.Inference.Nix.Type qualified as NT
 import Narsil.LSP.Handlers qualified as Handlers
 import Narsil.LSP.Handlers.Cursor (inferExprAtWithEnv)
-import Narsil.LSP.Handlers.Diagnostics (diagnosticsForExpr)
+import Narsil.LSP.Handlers.Diagnostics (diagnosticsForExpr, unusedLetBindings)
 import Narsil.LSP.Handlers.Features (
   completionsForExpr,
   findRef,
   inlayHintsForExpr,
   memberCompletions,
   violationAction,
+  violationActionIn,
  )
 import Narsil.LSP.Handlers.Project qualified as Project
 import Narsil.LSP.Handlers.Symbols (collectTopBindingSymbols)
@@ -338,8 +340,8 @@ testOptionsIndexMechanics =
       <> "  options.services.web.port = lib.mkOption { type = lib.types.int; };\n"
       <> "  options.services.db.port = lib.mkOption { type = lib.types.port; };\n}"
   entries =
-    [ Opts.OptionEntry p ty "m.nix" sp
-    | (p, t, sp) <- Module.declaredOptionsWithSpans (parse src)
+    [ Opts.OptionEntry p ty "m.nix" sp doc
+    | (p, t, sp, doc) <- Module.declaredOptionsWithSpans (parse src)
     , let ty = NT.prettyType t
     ]
   idx = Opts.OptionsIndex "/fake" entries
@@ -349,6 +351,57 @@ testOptionsIndexMechanics =
       && map fst (Opts.childrenAt idx ["services"] "w") == ["web"]
   exact =
     fmap Opts.oeType (Opts.lookupExact idx ["services", "db", "port"]) == Just "Int"
+
+{- | GUARD: the fix-carrying tier — a did-you-mean diagnostic carries a
+one-keystroke rename, `+`-on-lists carries the `++` edit, an unused
+binding carries its delete. Each edit is real (`WorkspaceEdit` with text).
+-}
+testFixCarryingActions :: IO Bool
+testFixCarryingActions =
+  holds (dymFix && plusFix && unusedFixes)
+ where
+  u = filePathToUri "/b.nix"
+  mkDiag line msg =
+    Diagnostic
+      { _range = Range (Position line 0) (Position line 1)
+      , _severity = Just DiagnosticSeverity_Error
+      , _code = Nothing
+      , _codeDescription = Nothing
+      , _source = Nothing
+      , _message = msg
+      , _tags = Nothing
+      , _relatedInformation = Nothing
+      , _data_ = Nothing
+      }
+  editTexts a = case a of
+    CodeAction{_edit = Just WorkspaceEdit{_changes = Just m}} ->
+      [t | edits <- Map.elems m, TextEdit _ t <- edits]
+    _ -> []
+  dymSrc = "let pkg = { pname = 1; }; in pkg.pnmae"
+  dymDiag =
+    mkDiag
+      0
+      "type: attribute 'pnmae' missing on closed attribute set (keys: pname); did you mean 'pname'?"
+  dymFix =
+    concatMap editTexts (violationActionIn (Just dymSrc) u Nothing dymDiag) == ["pname"]
+  plusSrc = "x = [ 1 ] + [ 2 ];"
+  plusDiag = mkDiag 0 "type: operator `+` cannot combine [Int] and [Int]"
+  plusFix =
+    concatMap editTexts (violationActionIn (Just plusSrc) u Nothing plusDiag) == [" ++ "]
+  unusedSrc = "let\n  dead = 1;\nin\n2"
+  unusedDiag = mkDiag 1 "unused-binding: unused let binding `dead`"
+  unusedFixes =
+    concatMap editTexts (violationActionIn (Just unusedSrc) u Nothing unusedDiag) == [""]
+
+{- | GUARD: unused let bindings are detected resolution-aware; underscore
+names and USED names are exempt.
+-}
+testUnusedBindings :: IO Bool
+testUnusedBindings =
+  holds (names == ["dead"])
+ where
+  names =
+    map Scope.declName (unusedLetBindings (parse "let dead = 1; _shh = 2; live = 3; in live"))
 
 -- ── navigation (definition / references) ───────────────────────────
 
@@ -468,6 +521,8 @@ lspFeatureTests =
   , ("lsp_member_completions", testMemberCompletions)
   , ("lsp_option_decl_span", testOptionDeclSpan)
   , ("lsp_options_index_mechanics", testOptionsIndexMechanics)
+  , ("lsp_fix_carrying_actions", testFixCarryingActions)
+  , ("lsp_unused_bindings", testUnusedBindings)
   , ("lsp_nav_findref_at_use", testFindRefAtUse)
   , ("lsp_nav_findref_narrowest_wins", testFindRefNarrowestWins)
   , ("lsp_hover_survives_type_error", testHoverSurvivesTypeError)

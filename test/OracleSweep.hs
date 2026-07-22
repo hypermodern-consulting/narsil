@@ -42,7 +42,7 @@ import Control.Concurrent (getNumCapabilities)
 import Control.Concurrent.Async (forConcurrently)
 import Control.Concurrent.QSemN (newQSemN, signalQSemN, waitQSemN)
 import Control.Exception (bracket_, evaluate, fromException, try)
-import Control.Monad (unless, when)
+import Control.Monad (forM, unless, when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (FromJSON, ToJSON, eitherDecodeFileStrict, encodeFile)
 import Data.ByteString.Base16 qualified as B16
@@ -276,10 +276,22 @@ main = do
 
   cache <- Closure.newClosureCache
   sem <- newQSemN =<< getNumCapabilities
-  results <- forConcurrently files $ \f ->
+  firstPass <- forConcurrently files $ \f ->
     bracket_ (waitQSemN sem 1) (signalQSemN sem 1) $ do
       o <- checkOne cache f
       pure (f, o)
+
+  -- SECOND CHANCE, SERIAL: a near-threshold giant can blow the per-file
+  -- budget from parallel CPU contention alone (tlpdb.nix runs ~12s solo,
+  -- 30s+ under a 16-way fan-out). Timed-out files re-run one at a time
+  -- with the same budget; only a file that times out ALONE counts.
+  results <-
+    forM firstPass $ \(f, o) ->
+      case o of
+        TimedOut -> do
+          o' <- checkOne cache f
+          pure (f, o')
+        _ -> pure (f, o)
 
   let counts = foldl' (\m (_, o) -> Map.insertWith (+) (bucketOf o) 1 m) Map.empty results
       sigOf (f, TypeErr e) = Just (signatureOf e, f)

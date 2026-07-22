@@ -24,6 +24,8 @@ module Narsil.LSP.Handlers.Project (
   buildCrossScopeGraphWith,
   invalidateModuleGraphCache,
   voidProjectDiags,
+  findProjectRoot,
+  lookupModuleGraph,
   lookupNixpkgsIndex,
   lookupOptionsIndex,
   warmNixpkgsIndex,
@@ -141,7 +143,7 @@ warmOptionsIndex root = do
  where
   claim s = pure (if Set.member root s then (s, False) else (Set.insert root s, True))
   build = do
-    result <- try (Opts.buildOptionsIndex root) :: IO (Either SomeException Opts.OptionsIndex)
+    result <- try (Opts.loadOrBuildOptionsIndex root) :: IO (Either SomeException Opts.OptionsIndex)
     either
       (const (pure ()))
       (\idx -> modifyMVar_ optionsIndexCache (pure . Map.insert root idx))

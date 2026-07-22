@@ -70,10 +70,11 @@ import Data.Fix (Fix (..))
 import Data.Foldable (toList)
 import Data.Functor.Compose (Compose (..))
 import Data.Graph (SCC (..), stronglyConnComp)
+import Data.List qualified as List
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict qualified as Map
-import Data.Maybe (isJust)
+import Data.Maybe (isJust, listToMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
@@ -567,6 +568,7 @@ inferSelect environment base path hasDefault =
               <> "' missing on closed attribute set (keys: "
               <> T.intercalate ", " (Map.keys fields)
               <> ")"
+              <> didYouMean k (Map.keys fields)
   -- open record: a missing key EXTENDS the row through its tail var, so
   -- repeated selections accumulate (`x.a` then `x.b` ⟹ `{a,b|ρ}`).
   resolve (TRec fields (ROpen r)) (Just k) = maybe openMiss (pure . fst) (Map.lookup k fields)
@@ -674,7 +676,11 @@ inferSymbol environment symbolName
   | Just scheme <- lookupEnv symbolName environment = instantiate scheme
   | not (null (envWith environment)) = resolveWithScopes symbolName (envWith environment)
   | envLenient environment = freshVar
-  | otherwise = throwTypeError $ "unbound variable: " <> symbolName
+  | otherwise =
+      throwTypeError $
+        "unbound variable: "
+          <> symbolName
+          <> didYouMean symbolName (Map.keys (envBindings environment))
  where
   -- Resolve via the ENCLOSING `with` scopes, innermost first (Nix searches
   -- them all, inner shadowing outer). A CLOSED record without the field is a
@@ -1418,6 +1424,37 @@ collectFreeVars (Layer (NUnary _ e)) = collectFreeVars e
 collectFreeVars (Layer (NBinary _ l r)) = collectFreeVars l ++ collectFreeVars r
 collectFreeVars (Layer (NStr str)) = concatMap collectFreeVars (antiquotedExprs str)
 collectFreeVars _ = []
+
+{- | A "; did you mean 'x'?" suffix when a candidate sits within edit
+distance 2 of the missing name (ties to the closest; short names need an
+exact-ish distance-1 match to avoid noise).
+-}
+didYouMean :: Text -> [Text] -> Text
+didYouMean wrong candidates
+  | T.length wrong > 40 = ""
+  | otherwise = maybe "" render best
+ where
+  render c = "; did you mean '" <> c <> "'?"
+  -- BOUNDED: length-window prefilter and a hard candidate cap — recovery
+  -- seams can raise many misses per file, and generated monsters
+  -- (texlive's tlpdb) carry thousand-key records; the suggestion must never
+  -- cost more than the error
+  plausible =
+    take 200 [c | c <- candidates, c /= wrong, abs (T.length c - T.length wrong) <= limit]
+  best =
+    listToMaybe
+      [ c
+      | (d, c) <- List.sort [(editDistance wrong c, c) | c <- plausible]
+      , d <= limit
+      ]
+  limit = if T.length wrong <= 3 then 1 else 2
+  editDistance a b = levenshtein (T.unpack a) (T.unpack b)
+  levenshtein xs ys = last (foldl' transform [0 .. length xs] ys)
+   where
+    transform row@(headCell : cells) ch = scanl compute (headCell + 1) (zip3 xs row cells)
+     where
+      compute z (c, diag, above) = minimum [z + 1, above + 1, diag + fromEnum (c /= ch)]
+    transform [] _ = []
 
 -- | the antiquoted sub-expressions of a string literal (`"x${e}y"` → [e])
 antiquotedExprs :: NString NExprLoc -> [NExprLoc]

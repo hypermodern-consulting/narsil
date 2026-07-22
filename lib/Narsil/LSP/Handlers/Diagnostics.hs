@@ -21,6 +21,7 @@ module Narsil.LSP.Handlers.Diagnostics (
   diagnosticsForExpr,
   diagnosticsForExprWith,
   moduleModeEnv,
+  unusedLetBindings,
 
   -- * Single-finding rendering (used across handlers / tests)
   toNixDiag,
@@ -33,6 +34,8 @@ module Narsil.LSP.Handlers.Diagnostics (
 )
 where
 
+import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
@@ -45,6 +48,7 @@ import Narsil.Core.Profiles qualified as Profiles
 import Narsil.Core.Span (Loc (..), Span (..))
 import Narsil.Inference.Nix (TypeEnv (..), builtinEnv, inferExprDiagnostics)
 import Narsil.Layout.ModuleKind (ModuleKind (..), detectKind, detectedKind)
+import Narsil.Layout.Scope qualified as Scope
 import Narsil.Lint.Derivation qualified as Deriv
 import Narsil.Lint.Forbidden qualified as Forbidden
 import Narsil.Lint.Nix (NixViolation (..), ViolationType (..), findNixViolations)
@@ -74,7 +78,67 @@ diagnosticsForExprWith config env path expr =
     , derivVios' config path expr
     , patternVios' config expr
     , embeddedBashDiags config expr
+    , unusedDiags config expr
     ]
+
+{- | Let bindings with ZERO references — resolution-aware via the scope
+graph, underscore-prefixed names exempt by convention. Severity follows the
+@unused-binding@ rule (Warning by default); the code-action layer attaches a
+delete quickfix.
+-}
+unusedDiags :: Config.Config -> NExprLoc -> [Diagnostic]
+unusedDiags config expr =
+  maybe [] withSev sevOf
+ where
+  sevOf = case Profiles.effectiveSeverity config "unused-binding" of -- CASE-OK: shape dispatch
+    Just Config.SevOff -> Nothing
+    Just Config.SevInfo -> Just DiagnosticSeverity_Information
+    Just Config.SevError -> Just DiagnosticSeverity_Error
+    _ -> Just DiagnosticSeverity_Warning
+  withSev sev =
+    [ ( spToDiagnostic
+          ("unused-binding: unused let binding `" <> Scope.declName d <> "`")
+          (fromScopeSpan (Scope.declSpan d))
+      )
+        { _severity = Just sev
+        , _code = Just (InR "unused-binding")
+        , _tags = Just [DiagnosticTag_Unnecessary]
+        }
+    | d <- unusedLetBindings expr
+    ]
+
+-- | a scope-graph span as a core span (line/col pairs carry over; no file)
+fromScopeSpan :: Scope.SourceSpan -> Span
+fromScopeSpan sp =
+  Span
+    (Loc (Scope.posLine (Scope.spanStart sp)) (Scope.posCol (Scope.spanStart sp)))
+    (Loc (Scope.posLine (Scope.spanEnd sp)) (Scope.posCol (Scope.spanEnd sp)))
+    Nothing
+
+-- | let-scope declarations with no references (underscore names exempt)
+unusedLetBindings :: NExprLoc -> [Scope.Declaration]
+unusedLetBindings expr =
+  [ d
+  | s <- Map.elems (Scope.sgScopes sg)
+  , Scope.scopeKind s == Scope.LetScope
+  , d <- Scope.scopeDeclarations s
+  , not ("_" `T.isPrefixOf` Scope.declName d)
+  , null (Scope.findReferences sg d)
+  , -- name-based backstop: `{ inherit flags; }` declares AND references
+  -- the name in the attrset scope, so resolution attributes the ref to
+  -- the inner decl — for a LINT, any same-named reference anywhere is
+  -- benefit of the doubt (under-reporting beats a false positive)
+  not (Scope.declName d `Set.member` allRefNames)
+  ]
+ where
+  sg = Scope.fromNixExpr Nothing expr
+  allRefNames =
+    Set.fromList
+      [ Scope.refName r
+      | s <- Map.elems (Scope.sgScopes sg)
+      , r <- Scope.scopeReferences s
+      , Scope.refKind r /= Scope.AttrRef
+      ]
 
 {- | The inference verdict as editor diagnostics, at the severity the config
 gives @type-check-failure@ (default Error; the `nixpkgs` profile remaps to

@@ -113,6 +113,12 @@ let nix-rules =
         , description = "Package without class declaration"
         , rationale = "Classification helps organization"
         }
+      , { id = "unused-binding"
+        , language = Language.Nix
+        , default-severity = Severity.Warning
+        , description = "Let binding with no references"
+        , rationale = "Dead code accumulates; the scope graph knows"
+        }
       , -- // naming // conventions
         { id = "non-lisp-case"
         , language = Language.Nix
@@ -189,6 +195,7 @@ let rule-ids =
         missing-meta = "missing-meta"
       , missing-description = "missing-description"
       , missing-class = "missing-class"
+      , unused-binding = "unused-binding"
       , -- nix naming
         non-lisp-case = "non-lisp-case"
       , default-nix-in-packages = "default-nix-in-packages"

@@ -170,7 +170,7 @@ source span — the bulk extractor behind the nixpkgs-wide options index.
 Peels the module lambda; walks `options`-headed bindings exactly as
 'declaredOptions'.
 -}
-declaredOptionsWithSpans :: NExprLoc -> [([Text], NixType, Span)]
+declaredOptionsWithSpans :: NExprLoc -> [([Text], NixType, Span, Maybe Text)]
 declaredOptionsWithSpans top = case peel top of -- CASE-OK: shape dispatch
   Layer (NSet _ bindings) -> concatMap fromBinding bindings
   _ -> []
@@ -186,7 +186,7 @@ declaredOptionsWithSpans top = case peel top of -- CASE-OK: shape dispatch
         walk rest v pos
   fromBinding _ = []
   walk prefix v pos
-    | Just t <- optionLeaf v = [(prefix, t, posSp pos)]
+    | Just t <- optionLeaf v = [(prefix, t, posSp pos, optionDocOf v)]
     | Layer (NSet _ bindings) <- v =
         concat
           [ walk (prefix ++ ks) inner pos'
@@ -196,6 +196,22 @@ declaredOptionsWithSpans top = case peel top of -- CASE-OK: shape dispatch
           ]
     | otherwise = []
   posSp p = srcSpanToSpan (NixA.SrcSpan p p)
+
+{- | The literal `description` of an option declaration, when present as a
+plain string: `mkOption { description = "…"; }` or the `mkEnableOption`
+argument rendered the way the module system would.
+-}
+optionDocOf :: NExprLoc -> Maybe Text
+optionDocOf e = case appSpine e of -- CASE-OK: shape dispatch
+  (headName -> Just "mkOption", [Layer (NSet _ bs)]) ->
+    listToMaybe
+      [ t
+      | NamedVar p (Layer (NStr (DoubleQuoted [Plain t]))) _ <- bs
+      , staticPath p == ["description"]
+      ]
+  (headName -> Just "mkEnableOption", [Layer (NStr (DoubleQuoted [Plain t]))]) ->
+    Just ("Whether to enable " <> t <> ".")
+  _ -> Nothing
 
 -- | strip @pre@ from the front of @xs@ ('Nothing' when it is not a prefix)
 stripPrefixKeys :: [Text] -> [Text] -> Maybe [Text]

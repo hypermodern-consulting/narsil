@@ -46,6 +46,10 @@ import Control.Exception (SomeException, try)
 import Control.Exception qualified as Exc
 import Control.Monad (join)
 import Control.Monad.IO.Class (MonadIO (..))
+import Data.Aeson (eitherDecodeFileStrict)
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Char (isAlphaNum)
 import Data.Coerce (coerce)
 import Data.Foldable (toList)
@@ -102,11 +106,12 @@ import Narsil.LSP.Handlers.Features (
   rangeOverlapsDiag,
   signatureAtCursor,
   toLspPos,
-  violationAction,
+  violationActionIn,
  )
 import Narsil.LSP.Handlers.Project (
   buildCrossEnv,
   buildCrossScopeGraphWith,
+  findProjectRoot,
   getProjectCache,
   invalidateModuleGraphCache,
   latestNixpkgsIndex,
@@ -142,7 +147,7 @@ import Nix.Expr.Types.Annotated (NExprLoc)
 import Nix.Expr.Types.Annotated qualified as NixAnn
 import Nix.Parser (parseNixTextLoc)
 import Nix.Utils qualified as NixU
-import System.Directory (doesFileExist)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath ((</>))
 import System.FilePath qualified as FP
 import System.IO.Unsafe (unsafePerformIO)
@@ -348,6 +353,7 @@ handlers =
     , requestHandler SMethod_TextDocumentDocumentSymbol documentSymbolHandler
     , requestHandler SMethod_TextDocumentSemanticTokensFull semanticTokensFullHandler
     , requestHandler SMethod_TextDocumentInlayHint inlayHintHandler
+    , requestHandler SMethod_WorkspaceSymbol workspaceSymbolHandler
     ]
 
 -- ═══════════════════════ lifecycle ═══════════════════════
@@ -483,12 +489,18 @@ hoverHandler req responder = do
     -- module-shaped buffers hover with the declared spine bound, exactly
     -- as diagnostics infer them — the features must agree about the buffer
     let env = moduleModeEnv enriched (fromMaybe "<buffer>" (uriToFilePath uri)) expr
+    -- the options universe speaks on hover too: a `config.…` select (alias-
+    -- aware) appends its declared type, documentation, and declaring file
+    optDoc <- liftIO (optionHoverDoc uri (fromIntegral l) (fromIntegral c) expr)
     hover
-      ( maybe
-          noExpr
-          (contents env expr l c)
-          (inferExprAtWithEnv env expr (fromIntegral l) (fromIntegral c))
+      ( withOptDoc optDoc $
+          maybe
+            noExpr
+            (contents env expr l c)
+            (inferExprAtWithEnv env expr (fromIntegral l) (fromIntegral c))
       )
+  withOptDoc mDoc (MarkupContent k v) =
+    MarkupContent k (v <> maybe "" ("\n\n" <>) mDoc)
   noExpr = MarkupContent MarkupKind_Markdown "`no expression at cursor`"
   contents env expr l c t =
     MarkupContent MarkupKind_Markdown (rendered <> optInfo)
@@ -510,6 +522,101 @@ hoverHandler req responder = do
         <> "` : "
         <> NT.prettyType (MS.optType oi)
         <> maybe "" ("\n\n" <>) (MS.optDescription oi)
+
+-- ═══════════════════════ workspace symbols ═══════════════════════
+
+workspaceSymbolHandler ::
+  TRequestMessage 'Method_WorkspaceSymbol ->
+  ( Either
+      (TResponseError 'Method_WorkspaceSymbol)
+      ([SymbolInformation] |? ([WorkspaceSymbol] |? Null)) ->
+    LspT () IO ()
+  ) ->
+  LspM () ()
+workspaceSymbolHandler req responder = do
+  let TRequestMessage _ _ _ params = req
+      WorkspaceSymbolParams _workDone _partial query = params
+  mroot <- getRootPath
+  syms <- liftIO (workspaceSymbols mroot query)
+  responder $ Right $ InL syms
+
+{- | Every top-level binding in every project @.nix@ file whose name
+contains the query (case-insensitive) — "jump to any binding by name". A
+direct project scan (parse + topBindings), session-memoized per root:
+projects are small next to nixpkgs, and the scan sees flat repos the
+import-reachable module graph cannot.
+-}
+workspaceSymbols :: Maybe FilePath -> Text -> IO [SymbolInformation]
+workspaceSymbols mroot query =
+  maybe (pure []) viaRoot mroot
+ where
+  q = T.toLower query
+  viaRoot root = do
+    entries <- projectBindings root
+    pure
+      [ SymbolInformation
+          { _name = name
+          , _kind = SymbolKind_Variable
+          , _tags = Nothing
+          , _containerName = Nothing
+          , _deprecated = Nothing
+          , _location = Location (filePathToUri file) (Range pos pos)
+          }
+      | (file, name, pos) <- entries
+      , T.null q || q `T.isInfixOf` T.toLower name
+      ]
+
+{-# NOINLINE projectBindingsRef #-}
+projectBindingsRef :: IORef (Map.Map FilePath [(FilePath, Text, Position)])
+projectBindingsRef = unsafePerformIO (newIORef Map.empty)
+
+-- | (file, binding, position) for every top-level binding under the root
+projectBindings :: FilePath -> IO [(FilePath, Text, Position)]
+projectBindings root = do
+  memo <- readIORef projectBindingsRef
+  maybe scan pure (Map.lookup root memo)
+ where
+  scan = do
+    files <- projectNixFiles root
+    entries <- concat <$> mapM fileBindings files
+    modifyIORef' projectBindingsRef (Map.insert root entries)
+    pure entries
+  fileBindings f = do
+    parsed <- NixParse.parseNixFile f
+    pure (either (const []) (bindingsOf f) parsed)
+  -- top-level attrset bindings PLUS the let bindings passed through on the
+  -- way (the common `let helpers in { … }` file shape)
+  bindingsOf f e =
+    [ (f, varNameText k, annPos pos)
+    | NamedVar (StaticKey k :| _) _ pos <- collectBindings e
+    ]
+  collectBindings (Layer (NSet _ bs)) = bs
+  collectBindings (Layer (NAbs _ body)) = collectBindings body
+  collectBindings (Layer (NLet bs body)) = bs ++ collectBindings body
+  collectBindings (Layer (NWith _ body)) = collectBindings body
+  collectBindings _ = []
+  annPos p =
+    let sp = srcSpanToSpan (NixAnn.SrcSpan p p)
+        CSpan.Loc ln col = CSpan.spanStart sp
+     in Position (fromIntegral (max 0 (ln - 1))) (fromIntegral (max 0 (col - 1)))
+
+-- | project @.nix@ files (skipping VCS/build dirs), capped defensively
+projectNixFiles :: FilePath -> IO [FilePath]
+projectNixFiles root = take 2000 <$> go root
+ where
+  go dir = do
+    names <- listDirectory dir
+    concat
+      <$> mapM
+        ( \name -> do
+            let p = dir FP.</> name
+            isDir <- doesDirectoryExist p
+            if isDir
+              then if name `elem` skipDirs then pure [] else go p
+              else pure [p | FP.takeExtension p == ".nix"]
+        )
+        names
+  skipDirs = [".git", ".direnv", "node_modules", "result", "dist-newstyle", ".cache"]
 
 -- ═══════════════════════ definition ═══════════════════════
 
@@ -597,14 +704,18 @@ segments — leaves with their declared types, namespaces marked as such.
 optionCompletions ::
   Uri -> Text -> Int -> Int -> Maybe NExprLoc -> IO [CompletionItem]
 optionCompletions uri txt l c mExpr =
-  maybe (pure []) viaChain $ do
-    expr <- mExpr
-    line <- listToMaybe (drop l (T.lines txt))
-    let (chain, partial) = chainBeforeCursor (T.take c line)
-    (base : rest) <- Just chain
-    full <- configPathOf expr base rest
-    Just (full, partial)
+  case chainAt of -- CASE-OK: shape dispatch
+    Just (["inputs"], partial) -> inputsCompletions uri partial
+    _ ->
+      maybe (pure []) viaChain $ do
+        expr <- mExpr
+        (base : rest, partial) <- chainAt
+        full <- configPathOf expr base rest
+        Just (full, partial)
  where
+  chainAt = do
+    line <- listToMaybe (drop l (T.lines txt))
+    Just (chainBeforeCursor (T.take c line))
   viaChain (prefix, partial) = do
     mIdx <- lookupOptionsIndex uri
     pure $ case mIdx of -- CASE-OK: shape dispatch
@@ -619,28 +730,93 @@ optionCompletions uri txt l c mExpr =
       , _kind = Just CompletionItemKind_Property
       , _detail = Just (fromMaybe "namespace" mty)
       }
-  optItemBase =
-    CompletionItem
-      { _label = ""
-      , _labelDetails = Nothing
-      , _kind = Nothing
-      , _tags = Nothing
-      , _detail = Nothing
-      , _documentation = Nothing
-      , _deprecated = Nothing
-      , _preselect = Nothing
-      , _sortText = Nothing
-      , _filterText = Nothing
-      , _insertText = Nothing
-      , _insertTextFormat = Nothing
-      , _insertTextMode = Nothing
-      , _textEdit = Nothing
-      , _textEditText = Nothing
-      , _additionalTextEdits = Nothing
-      , _commitCharacters = Nothing
-      , _command = Nothing
-      , _data_ = Nothing
+
+-- | `inputs.` completes from the project's flake.lock
+inputsCompletions :: Uri -> Text -> IO [CompletionItem]
+inputsCompletions uri partial = do
+  mRoot <- findProjectRoot uri
+  maybe (pure []) viaRoot mRoot
+ where
+  viaRoot root = do
+    let lock = root </> "flake.lock"
+    present <- doesFileExist lock
+    if not present
+      then pure []
+      else do
+        parsed <- eitherDecodeFileStrict lock
+        pure (either (const []) items parsed)
+  items v =
+    [ (mkFlakeItem name)
+    | name <- lockInputNames v
+    , partial `T.isPrefixOf` name
+    ]
+  mkFlakeItem name =
+    optItemBase
+      { _label = name
+      , _kind = Just CompletionItemKind_Module
+      , _detail = Just "flake input"
       }
+
+-- | the root node's input names from a parsed flake.lock
+lockInputNames :: Aeson.Value -> [Text]
+lockInputNames v =
+  fromMaybe [] $ do
+    Aeson.Object o <- Just v
+    Aeson.String rootName <- KeyMap.lookup "root" o
+    Aeson.Object nodes <- KeyMap.lookup "nodes" o
+    Aeson.Object rootNode <- KeyMap.lookup (Key.fromText rootName) nodes
+    Aeson.Object inputs <- KeyMap.lookup "inputs" rootNode
+    Just (map Key.toText (KeyMap.keys inputs))
+
+-- | a blank completion item to record-update from
+optItemBase :: CompletionItem
+optItemBase =
+  CompletionItem
+    { _label = ""
+    , _labelDetails = Nothing
+    , _kind = Nothing
+    , _tags = Nothing
+    , _detail = Nothing
+    , _documentation = Nothing
+    , _deprecated = Nothing
+    , _preselect = Nothing
+    , _sortText = Nothing
+    , _filterText = Nothing
+    , _insertText = Nothing
+    , _insertTextFormat = Nothing
+    , _insertTextMode = Nothing
+    , _textEdit = Nothing
+    , _textEditText = Nothing
+    , _additionalTextEdits = Nothing
+    , _commitCharacters = Nothing
+    , _command = Nothing
+    , _data_ = Nothing
+    }
+
+{- | The options-universe hover payload for a `config.…` select at the
+cursor: declared type, documentation, and the declaring file.
+-}
+optionHoverDoc :: Uri -> Int -> Int -> NExprLoc -> IO (Maybe Text)
+optionHoverDoc uri l c expr =
+  maybe (pure Nothing) viaIndex $ do
+    (base, path) <- selectPathAtCursor l c expr
+    configPathOf expr base path
+ where
+  viaIndex full = do
+    mIdx <- lookupOptionsIndex uri
+    pure $ do
+      idx <- mIdx
+      e <- Opts.lookupExact idx full
+      Just (renderEntry e)
+  renderEntry e =
+    "*option* `"
+      <> T.intercalate "." (Opts.oePath e)
+      <> "` : "
+      <> Opts.oeType e
+      <> maybe "" ("\n\n" <>) (Opts.oeDoc e)
+      <> "\n\n*declared in* `"
+      <> T.pack (Opts.oeFile e)
+      <> "`"
 
 {- | Resolve @base@ + trailing keys to a full `config.…` option path: the
 base is @config@ itself, or a binding aliasing a `config` select
@@ -902,7 +1078,7 @@ codeActionHandler req responder = do
         diags = fullLint cfg env path txt
         inRange = filter (rangeOverlapsDiag range) diags
         mSg = Scope.fromNixExpr Nothing <$> lspSafeParse txt
-        actions = concatMap (violationAction uri mSg) inRange
+        actions = concatMap (violationActionIn (Just txt) uri mSg) inRange
     responder $ Right $ InL (map InR actions)
 
 -- ═══════════════════════ document symbols ═══════════════════════

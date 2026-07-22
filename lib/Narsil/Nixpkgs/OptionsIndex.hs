@@ -25,6 +25,7 @@ module Narsil.Nixpkgs.OptionsIndex (
   OptionsIndex (..),
   OptionEntry (..),
   buildOptionsIndex,
+  loadOrBuildOptionsIndex,
   childrenAt,
   lookupExact,
 )
@@ -34,12 +35,21 @@ import Control.Concurrent (getNumCapabilities)
 import Control.Concurrent.Async (forConcurrently)
 import Control.Concurrent.QSemN (newQSemN, signalQSemN, waitQSemN)
 import Control.Exception (bracket_)
+import Data.Aeson (FromJSON, ToJSON, eitherDecodeFileStrict, encodeFile)
 import Data.List (nub)
 import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
-import System.Directory (doesDirectoryExist, listDirectory)
-import System.FilePath (takeExtension, (</>))
+import GHC.Generics (Generic)
+import System.Directory (
+  XdgDirectory (XdgCache),
+  createDirectoryIfMissing,
+  doesDirectoryExist,
+  doesFileExist,
+  getXdgDirectory,
+  listDirectory,
+ )
+import System.FilePath (takeBaseName, takeExtension, (</>))
 
 import Narsil.Core.Safety qualified as Safety
 import Narsil.Core.Span (Span)
@@ -52,8 +62,13 @@ data OptionEntry = OptionEntry
   , oeType :: !Text
   , oeFile :: !FilePath
   , oeSpan :: !Span
+  , oeDoc :: !(Maybe Text)
   }
-  deriving (Eq, Show)
+  deriving (Eq, Show, Generic)
+
+instance ToJSON OptionEntry
+
+instance FromJSON OptionEntry
 
 -- | the indexed options universe for one nixpkgs root.
 data OptionsIndex = OptionsIndex
@@ -66,6 +81,28 @@ data OptionsIndex = OptionsIndex
 extract its option declarations. Parse failures and non-modules contribute
 nothing; the walk is capability-bounded.
 -}
+
+{- | 'buildOptionsIndex' behind a DISK cache: a store-path root's contents
+never change, so the index persists keyed by the root's basename — session
+warm-up drops from seconds to a read.
+-}
+loadOrBuildOptionsIndex :: FilePath -> IO OptionsIndex
+loadOrBuildOptionsIndex root = do
+  dir <- getXdgDirectory XdgCache "narsil"
+  createDirectoryIfMissing True dir
+  let cacheFile = dir </> "options-" <> takeBaseName root <> ".json"
+  cached <- doesFileExist cacheFile
+  if cached
+    then do
+      parsed <- eitherDecodeFileStrict cacheFile
+      either (const (rebuild cacheFile)) (pure . OptionsIndex root) parsed
+    else rebuild cacheFile
+ where
+  rebuild cacheFile = do
+    idx <- buildOptionsIndex root
+    encodeFile cacheFile (oiEntries idx)
+    pure idx
+
 buildOptionsIndex :: FilePath -> IO OptionsIndex
 buildOptionsIndex root = do
   let modulesDir = root </> "nixos" </> "modules"
@@ -83,8 +120,8 @@ fileEntries f = do
   pure (either (const []) fromExpr parsed)
  where
   fromExpr expr =
-    [ OptionEntry path (NT.prettyType t) f sp
-    | (path, t, sp) <- Module.declaredOptionsWithSpans expr
+    [ OptionEntry path (NT.prettyType t) f sp doc
+    | (path, t, sp, doc) <- Module.declaredOptionsWithSpans expr
     ]
 
 nixFilesUnder :: FilePath -> IO [FilePath]

@@ -391,7 +391,18 @@ addBindingDecl _ _ = pure ()
 buildBinding :: Nix.Binding NExprLoc -> Build ()
 buildBinding (Nix.NamedVar _ expr _) = buildExpr expr
 buildBinding (Nix.Inherit (Just expr) _ _) = buildExpr expr
-buildBinding (Nix.Inherit Nothing _ _) = pure ()
+-- bare `inherit x;` READS x from the enclosing scope — that is a reference,
+-- and without it every `inherit`-exported let binding looks unused
+buildBinding (Nix.Inherit Nothing names srcSpan) = do
+  scope <- currentScope
+  forM_ names $ \varName ->
+    addRef
+      Reference
+        { refName = coerce varName
+        , refSpan = toSourceSpan' srcSpan
+        , refScope = scope
+        , refKind = InheritRef
+        }
 
 -- ── register parameter declarations in the function's scope ─────────
 
