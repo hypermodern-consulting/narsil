@@ -138,6 +138,7 @@ library
         Narsil.Nixpkgs.EvalRepl
         Narsil.Nixpkgs.Cache
         Narsil.Nixpkgs.Warm
+        Narsil.Nixpkgs.OptionsIndex
         Narsil.Nixpkgs.Oracle
     build-depends:
         aeson >= 2.0 && < 2.3,

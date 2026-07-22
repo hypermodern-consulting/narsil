@@ -29,6 +29,7 @@ module Narsil.LSP.Handlers.Features (
   memberCompletions,
   PkgsCtx (..),
   nixpkgsCompletionContext,
+  chainBeforeCursor,
   pkgNameCompletions,
   attrCompletions,
   -- signature help

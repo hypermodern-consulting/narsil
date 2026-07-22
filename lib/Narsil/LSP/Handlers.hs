@@ -89,6 +89,7 @@ import Narsil.LSP.Handlers.Diagnostics (
 import Narsil.LSP.Handlers.Features (
   PkgsCtx (..),
   attrCompletions,
+  chainBeforeCursor,
   completionsForExpr,
   findRef,
   inferOptionAtPath,
@@ -110,6 +111,7 @@ import Narsil.LSP.Handlers.Project (
   invalidateModuleGraphCache,
   latestNixpkgsIndex,
   lookupNixpkgsIndex,
+  lookupOptionsIndex,
   resolveNixpkgsRoot,
   voidProjectDiags,
  )
@@ -130,6 +132,7 @@ import Narsil.Nixpkgs.Cache (
 import Narsil.Nixpkgs.Eval (EvalBackend (..), EvalError (..), composeBackend, shapeBackend)
 import Narsil.Nixpkgs.EvalRepl (replBackend)
 import Narsil.Nixpkgs.Index qualified as Nixpkgs
+import Narsil.Nixpkgs.OptionsIndex qualified as Opts
 import Narsil.Nixpkgs.Oracle (buildPkgsOracle, collectPkgsChainsAnn, pkgsAttrTypos)
 import Narsil.Nixpkgs.Warm (WarmPool, enqueueDemand, newWarmPool, swapFocus)
 import Narsil.Syntax.Annotation (srcSpanToSpan, varNameText, pattern Layer)
@@ -535,10 +538,15 @@ definitionHandler req responder = do
         case optionDeclJump li ci expr of -- CASE-OK: shape dispatch
           Just sp -> emitSpanHere uri sp
           Nothing -> do
-            -- through-the-import jump: `dep.field` where `dep = import
-            -- ./dep.nix` opens the neighbor file at field's binding
-            mImp <- liftIO (importJump uri li ci expr)
-            maybe (scopePath uri l c expr) (uncurry emitSpanIn) mImp
+            -- the NIXPKGS option universe: jump to the declaring module
+            mOpt <- liftIO (nixpkgsOptionJump uri li ci expr)
+            case mOpt of -- CASE-OK: shape dispatch
+              Just (f, sp) -> emitSpanIn f sp
+              Nothing -> do
+                -- through-the-import jump: `dep.field` where `dep = import
+                -- ./dep.nix` opens the neighbor file at field's binding
+                mImp <- liftIO (importJump uri li ci expr)
+                maybe (scopePath uri l c expr) (uncurry emitSpanIn) mImp
   emitSpanHere uri sp =
     responder $
       Right $
@@ -582,21 +590,69 @@ definitionHandler req responder = do
             )
      in responder $ Right $ InL (Definition (InL loc))
 
-{- | The option-declaration jump: a cursor on a `config.…` select (or one
-aliased through a binding like @cfg = config.services.foo@) resolves to the
-SPAN of its `mkOption` declaration in the same buffer.
+{- | `config.…` completion from the nixpkgs options index: resolve the
+dotted chain (alias-aware) to an option path prefix and offer the NEXT
+segments — leaves with their declared types, namespaces marked as such.
 -}
-optionDeclJump :: Int -> Int -> NExprLoc -> Maybe CSpan.Span
-optionDeclJump l c expr = do
-  (base, path) <- selectPathAtCursor l c expr
-  full <-
-    if base == "config"
-      then Just path
-      else do
-        v <- bindingValueByName base expr
-        pre <- configSelectPath v
-        Just (pre ++ path)
-  Module.optionDeclSpanFor full (moduleBodyOf expr)
+optionCompletions ::
+  Uri -> Text -> Int -> Int -> Maybe NExprLoc -> IO [CompletionItem]
+optionCompletions uri txt l c mExpr =
+  maybe (pure []) viaChain $ do
+    expr <- mExpr
+    line <- listToMaybe (drop l (T.lines txt))
+    let (chain, partial) = chainBeforeCursor (T.take c line)
+    (base : rest) <- Just chain
+    full <- configPathOf expr base rest
+    Just (full, partial)
+ where
+  viaChain (prefix, partial) = do
+    mIdx <- lookupOptionsIndex uri
+    pure $ case mIdx of -- CASE-OK: shape dispatch
+      Nothing -> []
+      Just idx ->
+        [ mkOptItem name mty
+        | (name, mty) <- Opts.childrenAt idx prefix partial
+        ]
+  mkOptItem name mty =
+    optItemBase
+      { _label = name
+      , _kind = Just CompletionItemKind_Property
+      , _detail = Just (fromMaybe "namespace" mty)
+      }
+  optItemBase =
+    CompletionItem
+      { _label = ""
+      , _labelDetails = Nothing
+      , _kind = Nothing
+      , _tags = Nothing
+      , _detail = Nothing
+      , _documentation = Nothing
+      , _deprecated = Nothing
+      , _preselect = Nothing
+      , _sortText = Nothing
+      , _filterText = Nothing
+      , _insertText = Nothing
+      , _insertTextFormat = Nothing
+      , _insertTextMode = Nothing
+      , _textEdit = Nothing
+      , _textEditText = Nothing
+      , _additionalTextEdits = Nothing
+      , _commitCharacters = Nothing
+      , _command = Nothing
+      , _data_ = Nothing
+      }
+
+{- | Resolve @base@ + trailing keys to a full `config.…` option path: the
+base is @config@ itself, or a binding aliasing a `config` select
+(@cfg = config.services.foo@).
+-}
+configPathOf :: NExprLoc -> Text -> [Text] -> Maybe [Text]
+configPathOf expr base path
+  | base == "config" = Just path
+  | otherwise = do
+      v <- bindingValueByName base expr
+      pre <- configSelectPath v
+      Just (pre ++ path)
  where
   configSelectPath (Layer (NSelect _ inner p))
     | Just "config" <- symOfE inner =
@@ -604,8 +660,35 @@ optionDeclJump l c expr = do
   configSelectPath _ = Nothing
   symOfE (Layer (NSym n)) = Just (varNameText n)
   symOfE _ = Nothing
+
+{- | The option-declaration jump within the SAME buffer: a `config.…` select
+(alias-aware) resolves to the span of its local mkOption declaration.
+-}
+optionDeclJump :: Int -> Int -> NExprLoc -> Maybe CSpan.Span
+optionDeclJump l c expr = do
+  (base, path) <- selectPathAtCursor l c expr
+  full <- configPathOf expr base path
+  Module.optionDeclSpanFor full (moduleBodyOf expr)
+ where
   moduleBodyOf (Layer (NAbs _ b)) = moduleBodyOf b
   moduleBodyOf e = e
+
+{- | The NIXPKGS option jump: same resolution, answered from the options
+INDEX — the cursor on `config.services.nginx.enable` opens the declaring
+module file in nixpkgs at the mkOption's span.
+-}
+nixpkgsOptionJump :: Uri -> Int -> Int -> NExprLoc -> IO (Maybe (FilePath, CSpan.Span))
+nixpkgsOptionJump uri l c expr =
+  maybe (pure Nothing) viaIndex $ do
+    (base, path) <- selectPathAtCursor l c expr
+    configPathOf expr base path
+ where
+  viaIndex full = do
+    mIdx <- lookupOptionsIndex uri
+    pure $ do
+      idx <- mIdx
+      e <- Opts.lookupExact idx full
+      Just (Opts.oeFile e, Opts.oeSpan e)
 
 {- | The through-the-import jump: @dep.field@ where @dep = import ./dep.nix@
 opens the neighbor file at @field@'s top-level binding.
@@ -751,8 +834,12 @@ completionHandler req responder = do
             (\e -> memberCompletions env' (Infer.inferExprBindingsPartial env' e) txt li ci)
             mExpr
         scopeItems = maybe [] (\e -> completionsForExpr env' txt e li ci) mExpr
-        chosen
+    -- the OPTIONS universe: `config.…` (alias-aware) completes from the
+    -- nixpkgs-wide declaration index
+    optItems <- liftIO (optionCompletions uri txt li ci mExpr)
+    let chosen
           | not (null nixItems) = nixItems
+          | not (null optItems) = optItems
           | not (null members) = members
           | otherwise = scopeItems
     responder $ Right $ InL chosen

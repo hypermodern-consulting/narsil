@@ -42,6 +42,7 @@ module Narsil.Inference.Nix.Module (
   definitionSiteFor,
   definitionRoots,
   optionDeclSpanFor,
+  declaredOptionsWithSpans,
 ) where
 
 import Data.List.NonEmpty (NonEmpty (..))
@@ -163,6 +164,38 @@ optionDeclSpanFor path body = case peel body of -- CASE-OK: shape dispatch
       ]
   walk _ _ _ = []
   posSpan p = srcSpanToSpan (NixA.SrcSpan p p)
+
+{- | EVERY option declaration in a module file, with its reified type and
+source span — the bulk extractor behind the nixpkgs-wide options index.
+Peels the module lambda; walks `options`-headed bindings exactly as
+'declaredOptions'.
+-}
+declaredOptionsWithSpans :: NExprLoc -> [([Text], NixType, Span)]
+declaredOptionsWithSpans top = case peel top of -- CASE-OK: shape dispatch
+  Layer (NSet _ bindings) -> concatMap fromBinding bindings
+  _ -> []
+ where
+  peel (Layer (NAbs _ e)) = peel e
+  peel (Layer (NLet _ e)) = peel e
+  peel (Layer (NWith _ e)) = peel e
+  peel (Layer (NAssert _ e)) = peel e
+  peel e = e
+  fromBinding (NamedVar bpath v pos)
+    | (k : rest) <- staticPath bpath
+    , k == "options" =
+        walk rest v pos
+  fromBinding _ = []
+  walk prefix v pos
+    | Just t <- optionLeaf v = [(prefix, t, posSp pos)]
+    | Layer (NSet _ bindings) <- v =
+        concat
+          [ walk (prefix ++ ks) inner pos'
+          | NamedVar bpath' inner pos' <- bindings
+          , let ks = staticPath bpath'
+          , not (null ks)
+          ]
+    | otherwise = []
+  posSp p = srcSpanToSpan (NixA.SrcSpan p p)
 
 -- | strip @pre@ from the front of @xs@ ('Nothing' when it is not a prefix)
 stripPrefixKeys :: [Text] -> [Text] -> Maybe [Text]

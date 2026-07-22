@@ -49,6 +49,7 @@ import Narsil.Core.Span (Loc (..), Span (..))
 import Narsil.Inference.Nix (TypeEnv (..), builtinEnv, inferExprWithEnv)
 import Narsil.Inference.Nix qualified as Infer
 import Narsil.Inference.Nix.Module qualified as Module
+import Narsil.Inference.Nix.Type qualified as NT
 import Narsil.LSP.Handlers qualified as Handlers
 import Narsil.LSP.Handlers.Cursor (inferExprAtWithEnv)
 import Narsil.LSP.Handlers.Diagnostics (diagnosticsForExpr)
@@ -62,6 +63,7 @@ import Narsil.LSP.Handlers.Features (
 import Narsil.LSP.Handlers.Project qualified as Project
 import Narsil.LSP.Handlers.Symbols (collectTopBindingSymbols)
 import Narsil.Layout.Scope qualified as Scope
+import Narsil.Nixpkgs.OptionsIndex qualified as Opts
 import Nix.Expr.Types.Annotated (NExprLoc)
 import Nix.Parser (parseNixTextLoc)
 
@@ -323,6 +325,31 @@ testOptionDeclSpan =
       <> "lib.mkOption { type = lib.types.int; };\n  config.services.canary.port = 80;\n}"
   sp = Module.optionDeclSpanFor ["services", "canary", "port"] (parse src)
 
+{- | GUARD: the options-index primitives — bulk span-carrying extraction
+from a module, child queries at a prefix, exact lookup. (The nixpkgs-wide
+build is exercised by the live corpus; these pin the mechanics.)
+-}
+testOptionsIndexMechanics :: IO Bool
+testOptionsIndexMechanics =
+  holds (extracted && children && exact)
+ where
+  src =
+    "{\n  options.services.web.enable = lib.mkEnableOption \"web\";\n"
+      <> "  options.services.web.port = lib.mkOption { type = lib.types.int; };\n"
+      <> "  options.services.db.port = lib.mkOption { type = lib.types.port; };\n}"
+  entries =
+    [ Opts.OptionEntry p ty "m.nix" sp
+    | (p, t, sp) <- Module.declaredOptionsWithSpans (parse src)
+    , let ty = NT.prettyType t
+    ]
+  idx = Opts.OptionsIndex "/fake" entries
+  extracted = length entries == 3
+  children =
+    map fst (Opts.childrenAt idx ["services", "web"] "") == ["enable", "port"]
+      && map fst (Opts.childrenAt idx ["services"] "w") == ["web"]
+  exact =
+    fmap Opts.oeType (Opts.lookupExact idx ["services", "db", "port"]) == Just "Int"
+
 -- ── navigation (definition / references) ───────────────────────────
 
 -- | Scope graph + first declaration / first reference of `let x = 1; in x + x`.
@@ -440,6 +467,7 @@ lspFeatureTests =
   , ("lsp_codeaction_rename_edit", testCodeActionRenameEdit)
   , ("lsp_member_completions", testMemberCompletions)
   , ("lsp_option_decl_span", testOptionDeclSpan)
+  , ("lsp_options_index_mechanics", testOptionsIndexMechanics)
   , ("lsp_nav_findref_at_use", testFindRefAtUse)
   , ("lsp_nav_findref_narrowest_wins", testFindRefNarrowestWins)
   , ("lsp_hover_survives_type_error", testHoverSurvivesTypeError)

@@ -25,6 +25,7 @@ module Narsil.LSP.Handlers.Project (
   invalidateModuleGraphCache,
   voidProjectDiags,
   lookupNixpkgsIndex,
+  lookupOptionsIndex,
   warmNixpkgsIndex,
   latestNixpkgsIndex,
   resolveNixpkgsRoot,
@@ -55,6 +56,7 @@ import Narsil.Layout.Closure qualified as Closure
 import Narsil.Layout.Graph qualified as Mod
 import Narsil.Layout.Scope qualified as Scope
 import Narsil.Nixpkgs.Index qualified as Nixpkgs
+import Narsil.Nixpkgs.OptionsIndex qualified as Opts
 import Narsil.Nixpkgs.StorePath (fixedOutputSourcePath)
 import Nix.Expr.Types.Annotated (NExprLoc)
 import System.Directory (canonicalizePath, doesDirectoryExist, doesFileExist)
@@ -108,6 +110,43 @@ changes, so an entry here is effectively permanent for the session.
 nixpkgsIndexCache :: MVar (Map.Map FilePath Nixpkgs.NixpkgsIndex)
 nixpkgsIndexCache = unsafePerformIO (newMVar Map.empty)
 
+{-# NOINLINE optionsIndexCache #-}
+
+{- | Built OPTIONS indices, keyed by checkout root — same doctrine as
+'nixpkgsIndexCache': store paths never change, entries live for the session.
+-}
+optionsIndexCache :: MVar (Map.Map FilePath Opts.OptionsIndex)
+optionsIndexCache = unsafePerformIO (newMVar Map.empty)
+
+{-# NOINLINE optionsIndexInflight #-}
+optionsIndexInflight :: MVar (Set.Set FilePath)
+optionsIndexInflight = unsafePerformIO (newMVar Set.empty)
+
+{- | Non-blocking: the options index for the project's nixpkgs, warming in the
+background on a miss — the same never-block discipline as the symbol index.
+-}
+lookupOptionsIndex :: Uri -> IO (Maybe Opts.OptionsIndex)
+lookupOptionsIndex uri = do
+  mRoot <- resolveNixpkgsRoot uri
+  maybe (pure Nothing) viaRoot mRoot
+ where
+  viaRoot root = do
+    cache <- readMVar optionsIndexCache
+    maybe (warmOptionsIndex root >> pure Nothing) (pure . Just) (Map.lookup root cache)
+
+warmOptionsIndex :: FilePath -> IO ()
+warmOptionsIndex root = do
+  won <- modifyMVar optionsIndexInflight claim
+  when won (void (async build))
+ where
+  claim s = pure (if Set.member root s then (s, False) else (Set.insert root s, True))
+  build = do
+    result <- try (Opts.buildOptionsIndex root) :: IO (Either SomeException Opts.OptionsIndex)
+    either
+      (const (pure ()))
+      (\idx -> modifyMVar_ optionsIndexCache (pure . Map.insert root idx))
+      result
+
 {-# NOINLINE nixpkgsIndexInflight #-}
 
 {- | Roots whose index is being built, so concurrent first-requests don't each
@@ -141,7 +180,11 @@ resolveNixpkgsRoot uri = firstJustM [fromEnvVar, fromFlakeLock, fromNixPath]
  where
   firstJustM [] = pure Nothing
   firstJustM (a : as) = a >>= maybe (firstJustM as) (pure . Just)
-  fromEnvVar = lookupEnv "NIX_COMPILE_NIXPKGS" >>= maybe (pure Nothing) keepDir
+  fromEnvVar = do
+    -- NARSIL_NIXPKGS, with the legacy name honored
+    preferred <- lookupEnv "NARSIL_NIXPKGS"
+    legacy <- lookupEnv "NIX_COMPILE_NIXPKGS"
+    maybe (pure Nothing) keepDir (preferred <|> legacy)
   fromNixPath = lookupEnv "NIX_PATH" >>= maybe (pure Nothing) (keepFirstDir . nixpkgsPaths)
   nixpkgsPaths np =
     [ T.unpack (T.drop 8 e)
