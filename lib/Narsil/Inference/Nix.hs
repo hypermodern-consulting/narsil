@@ -38,6 +38,7 @@ module Narsil.Inference.Nix (
   inferExpr,
   inferModuleExpr,
   inferExprWithEnv,
+  inferExprDiagnostics,
   inferExprBindingsPartial,
   inferFile,
   runInfer,
@@ -1094,10 +1095,12 @@ checkDeclaredDefinitions env tree body
   -- references sibling scope degrades to a var (vacuous unify, no false
   -- positive) while literal definitions — the actual misconfiguration
   -- shape — keep full strength and their exact spans.
+  -- each definition is its own recovery seam: EVERY wrong definition in a
+  -- module reports, not just the first
   checkOne (path, declaredT) =
     case Module.definitionSiteFor path body of -- CASE-OK: shape dispatch
       Nothing -> pure ()
-      Just defExpr@(LayerAnn sp _) -> do
+      Just defExpr@(LayerAnn sp _) -> recoverWith () $ do
         defT <- infer env{envLenient = True} defExpr
         withSpan (srcSpanToSpan sp) (unify declaredT defT)
 
@@ -1203,7 +1206,7 @@ inferRecursiveBindings environment bindings'' = do
         names = map (\(n, _, _) -> n) groupBindings
     freshVars <- replicateM (length names) freshVar
     let envRec = foldr (\(n, t) e -> extendEnv n (Forall [] t) e) curEnv (zip names freshVars)
-    forM_ (zip groupBindings freshVars) $ \((name, expr, sp), typeVar) -> do
+    forM_ (zip groupBindings freshVars) $ \((name, expr, sp), typeVar) -> recoverWith () $ do
       t <- infer envRec expr
       unify typeVar t
       t' <- applyCurrentSubst t
@@ -1252,7 +1255,11 @@ inferBindings :: Bool -> TypeEnv -> [Nix.Binding NExprLoc] -> Infer [(Text, NixT
 inferBindings recursive environment bindings
   | recursive = inferRecursiveBindings environment bindings
   | otherwise =
-      concat <$> mapM (inferNonRecursiveBinding environment) (desugarNestedBindings bindings)
+      concat <$> mapM one (desugarNestedBindings bindings)
+ where
+  -- recovery seam: the failed binding's fields stay PRESENT (dynamic), so
+  -- the record does not also manufacture missing-field errors downstream
+  one b = recoverWith [(n, TAny) | (n, _, _) <- parseBinding b] (inferNonRecursiveBinding environment b)
 
 {- | Desugar nested-path bindings into top-level bindings whose value is a
 synthesised attrset. Closes S5 from review-2: previously @{ a.b = 1; }@ was
@@ -1346,7 +1353,10 @@ inferLetGroup _baseEnv currentEnv scc = do
   let envRecursive =
         foldr (\(n, t) e -> extendEnv n (Forall [] t) e) currentEnv (zip names freshVars)
 
-  forM_ (zip groupBindings freshVars) $ \((name, expr, sp), typeVar) -> do
+  -- each binding is a RECOVERY seam: a broken binding records its error and
+  -- leaves its placeholder free (polymorphic downstream — reported once,
+  -- never cascading), instead of silencing the rest of the file
+  forM_ (zip groupBindings freshVars) $ \((name, expr, sp), typeVar) -> recoverWith () $ do
     t <- infer envRecursive expr
     unify typeVar t
     t' <- applyCurrentSubst t
@@ -1485,6 +1495,16 @@ inferExprWithEnv env expr =
   runInfer $ do
     t <- infer env expr
     applyCurrentSubst t
+
+{- | EVERY inference error in the expression (oldest first) plus all emitted
+bindings — the multi-diagnostic entry point. The recovery seams (let\/rec\/
+attrset bindings, module definitions) mean one broken binding is one entry
+here; a top-level error outside any seam ends the list.
+-}
+inferExprDiagnostics :: TypeEnv -> NExprLoc -> ([Text], [Binding])
+inferExprDiagnostics env expr =
+  let (errs, binds, _) = runInferAll (infer env expr >>= applyCurrentSubst)
+   in (errs, binds)
 
 {- | The bindings inference emitted, INCLUDING on failure: everything typed
 before the error point. Powers editor features that must degrade gracefully

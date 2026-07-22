@@ -43,7 +43,7 @@ import Narsil.Bash.Parse (parseBash)
 import Narsil.Core.Config qualified as Config
 import Narsil.Core.Profiles qualified as Profiles
 import Narsil.Core.Span (Loc (..), Span (..))
-import Narsil.Inference.Nix (TypeEnv (..), builtinEnv, inferExprWithEnv)
+import Narsil.Inference.Nix (TypeEnv (..), builtinEnv, inferExprDiagnostics)
 import Narsil.Layout.ModuleKind (ModuleKind (..), detectKind, detectedKind)
 import Narsil.Lint.Derivation qualified as Deriv
 import Narsil.Lint.Forbidden qualified as Forbidden
@@ -83,11 +83,11 @@ dynamic — the same 'detectKind' dispatch as the CLI check path.
 -}
 typeDiags :: Config.Config -> TypeEnv -> FilePath -> NExprLoc -> [Diagnostic]
 typeDiags config env path expr =
-  maybe [] (pure . toDiag) (verdict (Profiles.effectiveSeverity config Config.typeCheckRuleId))
+  map toDiag (verdicts (Profiles.effectiveSeverity config Config.typeCheckRuleId))
  where
-  verdict (Just Config.SevOff) = Nothing
-  verdict msev =
-    either (\err -> Just (sevOf msev, err)) (const Nothing) (inferExprWithEnv env' expr)
+  verdicts (Just Config.SevOff) = []
+  verdicts msev =
+    [(sevOf msev, err) | err <- fst (inferExprDiagnostics env' expr)]
   sevOf (Just Config.SevWarning) = DiagnosticSeverity_Warning
   sevOf (Just Config.SevInfo) = DiagnosticSeverity_Information
   sevOf _ = DiagnosticSeverity_Error

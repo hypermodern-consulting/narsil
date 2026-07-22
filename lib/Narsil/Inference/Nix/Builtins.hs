@@ -229,6 +229,7 @@ builtinEnv =
           ("throw", TFun TString TAny)
         , ("abort", TFun TString TAny)
         , ("trace", TFun TAny (TFun TAny TAny))
+        , ("warn", TFun TString (TFun TAny TAny))
         , ("seq", TFun TAny (TFun TAny TAny))
         , ("deepSeq", TFun TAny (TFun TAny TAny))
         ,

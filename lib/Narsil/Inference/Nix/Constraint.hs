@@ -28,6 +28,8 @@ module Narsil.Inference.Nix.Constraint (
   Infer,
   runInfer,
   runInferBinds,
+  runInferAll,
+  recoverWith,
 
   -- * Primitives
   emitBinding,
@@ -77,6 +79,12 @@ data InferState = InferState
   , inferBinds :: ![Binding]
   , inferSpan :: !(Maybe Span)
   , inferWithMemo :: !(Map Text NixType)
+  , inferErrors :: ![Text]
+  {- ^ RECOVERED errors, newest first: 'recoverWith' seams record the failure
+  and continue, so one broken binding no longer silences the rest of the
+  file. 'runInferAll' surfaces them all; the classic Either runners treat a
+  non-empty log as failure (first error), preserving their old contract.
+  -}
   , inferLacks :: !(Map TypeVar (Set Text))
   {- ^ Gaster–Jones lacks-constraints: for an open row variable @r@, the labels
   @r@ must NOT contain — exactly the labels owned by every record that has @r@
@@ -95,8 +103,11 @@ starts with empty substitution / fresh-var counter at 0
 runInfer :: Infer a -> Either Text (a, [Binding])
 runInfer inference =
   let (eitherResult, inferState) =
-        runState (runExceptT inference) (InferState 0 emptySubst [] Nothing Map.empty Map.empty)
-   in (\res -> (res, inferBinds inferState)) <$> eitherResult
+        runState (runExceptT inference) initialInferState
+   in case (eitherResult, inferErrors inferState) of -- CASE-OK: shape dispatch
+        (Right res, []) -> Right (res, inferBinds inferState)
+        (Right _, errs) -> Left (last errs)
+        (Left e, _) -> Left e
 
 {- | Like 'runInfer', but the accumulated bindings SURVIVE an inference error —
 everything emitted before the failure point is real, typed information (a
@@ -104,9 +115,37 @@ single type error must not blank a whole file's inlay hints).
 -}
 runInferBinds :: Infer a -> (Either Text a, [Binding])
 runInferBinds inference =
-  let (eitherResult, inferState) =
-        runState (runExceptT inference) (InferState 0 emptySubst [] Nothing Map.empty Map.empty)
+  let (eitherResult, inferState) = runState (runExceptT inference) initialInferState
    in (eitherResult, inferBinds inferState)
+
+-- | the empty starting state
+initialInferState :: InferState
+initialInferState = InferState 0 emptySubst [] Nothing Map.empty [] Map.empty
+
+{- | Run with FULL error visibility: every recovered error (oldest first),
+every binding, and the result if the run itself did not abort. The
+multi-diagnostic entry point — one broken binding is one diagnostic, not a
+gag order on the file.
+-}
+runInferAll :: Infer a -> ([Text], [Binding], Maybe a)
+runInferAll inference =
+  let (eitherResult, inferState) = runState (runExceptT inference) initialInferState
+      recovered = reverse (inferErrors inferState)
+      errs = either (\e -> recovered ++ [e]) (const recovered) eitherResult
+   in (errs, inferBinds inferState, either (const Nothing) Just eitherResult)
+
+{- | Run an action; on failure RECORD the error, restore the state as of
+entry (substitution, memos — a failed unification must not poison its
+siblings), and continue with the fallback. Errors recovered INSIDE the
+attempt survive: they are real diagnostics from sub-seams.
+-}
+recoverWith :: a -> Infer a -> Infer a
+recoverWith fallback action = do
+  saved <- get
+  action `catchError` \e -> do
+    attemptErrors <- gets inferErrors
+    put saved{inferErrors = e : attemptErrors}
+    pure fallback
 
 -- ── emit a binding into the result list (prepended, reversed later) ──
 emitBinding :: Text -> NixType -> Span -> Infer ()
@@ -139,7 +178,13 @@ leave its partial constraints behind.
 catchInfer :: Infer a -> Infer a -> Infer a
 catchInfer action fallback = do
   saved <- get
-  action `catchError` \_ -> put saved >> fallback
+  result <- action `catchError` \_ -> put saved >> fallback
+  -- SPECULATION IS SILENT: errors recovered by seams INSIDE the attempt
+  -- (a broken binding no longer throws — it records and continues, so the
+  -- catch above never sees it) must not leak into the diagnostic log from
+  -- a region whose whole point is runtime-guarded suppression
+  modify (\s -> s{inferErrors = inferErrors saved})
+  pure result
 
 -- ── allocate a fresh type variable (monotonically increasing id) ──
 freshVar :: Infer NixType

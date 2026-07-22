@@ -393,7 +393,11 @@ documentChangeHandler notif = do
         { _textDocument = VersionedTextDocumentIdentifier{_uri = uri}
         , _contentChanges = cs
         } = params
-  let txt = firstChangeText cs
+  -- the VFS is the truth: the lsp library applies full AND incremental
+  -- edits correctly; reading the raw change event treated an incremental
+  -- fragment as the whole buffer
+  mvf <- getVirtualFile (toNormalizedUri uri)
+  let txt = maybe (firstChangeText cs) virtualFileText mvf
   (cfg, env, path) <- diagCtx uri
   let diags = fullLint cfg env path txt
   sendNotification SMethod_TextDocumentPublishDiagnostics $
@@ -465,8 +469,18 @@ hoverHandler req responder = do
       )
   noExpr = MarkupContent MarkupKind_Markdown "`no expression at cursor`"
   contents env expr l c t =
-    MarkupContent MarkupKind_Markdown ("`: " <> t <> "`" <> optInfo)
+    MarkupContent MarkupKind_Markdown (rendered <> optInfo)
    where
+    -- a bare inference variable ("a", "b1", …) means NOTHING CONSTRAINS
+    -- this value here — say that, instead of leaking solver vocabulary
+    rendered
+      | isBareVar t = "`: " <> t <> "` — *unconstrained*"
+      | otherwise = "`: " <> t <> "`"
+    isBareVar v =
+      not (T.null v)
+        && T.all (\ch -> ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9') v
+        && (T.head v >= 'a' && T.head v <= 'z')
+        && T.length v <= 3
     optInfo = maybe "" renderOpt (inferOptionAtPath env expr (fromIntegral l) (fromIntegral c))
     renderOpt oi =
       "\n\n*option* `"

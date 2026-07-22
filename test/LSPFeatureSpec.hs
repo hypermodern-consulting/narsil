@@ -150,6 +150,27 @@ testOffProfileSilent =
         )
     )
 
+{- | GUARD: MULTI-ERROR reporting — two independent broken bindings are two
+diagnostics, and a module with two wrong definitions reports both. One
+error is no longer a gag order on the file.
+-}
+testMultiErrorDiagnostics :: IO Bool
+testMultiErrorDiagnostics =
+  holds (length (typeOnly brokenLet) == 2 && length (typeOnly brokenModule) == 2)
+ where
+  typeOnly src =
+    [ d
+    | d <- diagnosticsForExpr strictish "module.nix" (parse src)
+    , Diagnostic{_message = m} <- [d]
+    , "type: " `T.isPrefixOf` m
+    ]
+  strictish = defaultConfig
+  brokenLet = "let a = 1 + \"x\"; b = builtins.stringLength 5; in [ a b ]"
+  brokenModule =
+    "{ config, lib, ... }: { options.m.port = lib.mkOption { type = lib.types.int; }; "
+      <> "options.m.name = lib.mkOption { type = lib.types.str; }; "
+      <> "config.m.port = \"80\"; config.m.name = 42; }"
+
 -- ── document symbols ───────────────────────────────────────────────
 
 -- | GUARD: a top-level attrset yields one document symbol per binding.
@@ -357,6 +378,7 @@ lspFeatureTests =
   , ("lsp_diag_surfaces_type_error", testDiagSurfacesTypeError)
   , ("lsp_diag_type_severity_remap", testDiagTypeSeverityRemap)
   , ("lsp_diag_off_profile_silent", testOffProfileSilent)
+  , ("lsp_diag_multi_error", testMultiErrorDiagnostics)
   , ("lsp_symbols_attrset", testSymbolsAttrset)
   , ("lsp_symbols_letin", testSymbolsLetIn)
   , ("lsp_inlay_clean", testInlayClean)

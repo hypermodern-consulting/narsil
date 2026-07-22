@@ -27,6 +27,7 @@ module Narsil.LSP.Server (run) where
 
 import Control.Monad.IO.Class
 import Data.Text ()
+import Language.LSP.Protocol.Types
 import Language.LSP.Server
 import Narsil.LSP.Handlers (handlers)
 
@@ -40,7 +41,22 @@ run =
       , doInitialize = \env _req -> pure (Right env)
       , staticHandlers = \_caps -> handlers
       , interpretHandler = \env -> Iso (runLspT env) liftIO
-      , options = defaultOptions
+      , -- FULL sync, declared: without an explicit sync capability a
+        -- client may negotiate incremental edits, and correctness then
+        -- depends on the VFS at every read site. Full keeps the contract
+        -- simple and the buffers small (Nix files, not novels).
+        options =
+          defaultOptions
+            { optTextDocumentSync =
+                Just
+                  TextDocumentSyncOptions
+                    { _openClose = Just True
+                    , _change = Just TextDocumentSyncKind_Full
+                    , _willSave = Nothing
+                    , _willSaveWaitUntil = Nothing
+                    , _save = Just (InR (SaveOptions (Just False)))
+                    }
+            }
       , defaultConfig = ()
       , configSection = "narsil"
       }
