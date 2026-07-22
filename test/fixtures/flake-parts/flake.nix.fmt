@@ -1,0 +1,98 @@
+{
+  # :: "Flake basics described using the module system"
+  description = "Flake basics described using the module system";
+
+  # :: {}
+  inputs = {
+    nixpkgs-lib.url = "github:nix-community/nixpkgs.lib";
+  };
+
+  # :: { nixpkgs-lib : a } | ... -> b
+  outputs = inputs@{ nixpkgs-lib, ... }:
+    let
+      # :: a
+      lib = import ./lib.nix {
+        inherit (nixpkgs-lib) lib;
+        # Extra info for version check message
+        # :: String
+        revInfo =
+          if nixpkgs-lib?rev
+          then " (nixpkgs-lib.rev: ${nixpkgs-lib.rev})"
+          else "";
+      };
+      # :: { default : { description : String, path : Path }, multi-module : { description : String, path : Path }, package : { description : String, path : Path }, unfree : { description : String, path : Path } }
+      templates = {
+        # :: { description : String, path : Path }
+        default = {
+          # :: Path
+          path = ./template/default;
+          # :: String
+          description = ''
+            A minimal flake using flake-parts.
+          '';
+        };
+        # :: { description : String, path : Path }
+        multi-module = {
+          # :: Path
+          path = ./template/multi-module;
+          # :: String
+          description = ''
+            A minimal flake using flake-parts.
+          '';
+        };
+        # :: { description : String, path : Path }
+        unfree = {
+          # :: Path
+          path = ./template/unfree;
+          # :: String
+          description = ''
+            A minimal flake using flake-parts importing nixpkgs with the unfree option.
+          '';
+        };
+        # :: { description : String, path : Path }
+        package = {
+          # :: Path
+          path = ./template/package;
+          # :: String
+          description = ''
+            A flake with a simple package:
+            - Nixpkgs
+            - callPackage
+            - src with fileset
+            - a check with runCommand
+          '';
+        };
+      };
+      # :: { bundlers : Path, easyOverlay : Path, flakeModules : Path, modules : Path, partitions : Path }
+      flakeModules = {
+        # :: Path
+        easyOverlay = ./extras/easyOverlay.nix;
+        # :: Path
+        flakeModules = ./extras/flakeModules.nix;
+        # :: Path
+        modules = ./extras/modules.nix;
+        # :: Path
+        partitions = ./extras/partitions.nix;
+        # :: Path
+        bundlers = ./extras/bundlers.nix;
+      };
+    in
+    lib.mkFlake { inherit inputs; } {
+      # :: [a]
+      systems = [ ];
+      # :: [Path]
+      imports = [ flakeModules.partitions ];
+      partitionedAttrs.checks = "dev";
+      partitionedAttrs.devShells = "dev";
+      partitionedAttrs.herculesCI = "dev";
+      partitions.dev.extraInputsFlake = ./dev;
+      partitions.dev.module = {
+        imports = [ ./dev/flake-module.nix ];
+      };
+      # :: { flakeModules : { bundlers : Path, easyOverlay : Path, flakeModules : Path, modules : Path, partitions : Path }, lib : a, templates : { default : { description : String, path : Path }, multi-module : { description : String, path : Path }, package : { description : String, path : Path }, unfree : { description : String, path : Path } } }
+      flake = {
+        inherit lib templates flakeModules;
+      };
+    };
+
+}

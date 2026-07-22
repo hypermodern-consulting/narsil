@@ -1,0 +1,376 @@
+cabal-version:      3.0
+name:               narsil
+version:            0.1.0.0
+synopsis:           Type inference for bash scripts at Nix eval time
+description:        Eliminates runtime bash bugs by catching type errors, missing variables,
+                    and policy violations during the build.
+license:            MIT
+author:             Aleph Systems
+maintainer:         dev@aleph.systems
+category:           Development
+build-type:         Simple
+
+common warnings
+    ghc-options: -Wall -Werror -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-export-lists -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+
+-- Deep-vendored nixfmt (RFC 166), MPL-2.0. Source from nixfmt 1.3.1 under
+-- vendor/nixfmt/ (see vendor/nixfmt/LICENSE), brought into our tree as
+-- first-class code: it builds under OUR -Wall -Werror flags (modified where
+-- needed; changes to these MPL files are themselves MPL). We format via
+-- Nixfmt.format for byte-exact parity with the nixfmt binary, then diverge by
+-- editing these modules directly.
+library nixfmt-vendored
+    import:           warnings
+    visibility:       private
+    exposed-modules:
+        Nixfmt
+        Nixfmt.Lexer
+        Nixfmt.Parser
+        Nixfmt.Parser.Float
+        Nixfmt.Predoc
+        Nixfmt.Pretty
+        Nixfmt.Types
+        Nixfmt.Util
+    hs-source-dirs:   vendor/nixfmt
+    default-language: Haskell2010
+    -- nixfmt's Pretty/parser instances are orphans by design (the Pretty class
+    -- lives in Predoc, the AST types in Types); de-orphaning would mean merging
+    -- those modules. Upstream disables this warning for the same reason.
+    ghc-options:      -Wno-orphans
+    build-depends:
+        base,
+        containers,
+        megaparsec,
+        mtl,
+        parser-combinators,
+        scientific,
+        text,
+        transformers,
+        pretty-simple
+
+library
+    import:           warnings
+    exposed-modules:
+        Narsil
+        Narsil.Bash.Builtins
+        Narsil.CLI.Bash
+        Narsil.CLI.CI
+        Narsil.CLI.Check
+        Narsil.CLI.Dispatch
+        Narsil.CLI.Report
+        Narsil.CLI.Types
+        Narsil.Core.Config
+        Narsil.Core.Diagnostic
+        Narsil.Core.Draw
+        Narsil.Bash.Facts
+        Narsil.Bash.Facts.Token
+        Narsil.Bash.Facts.Value
+        Narsil.Bash.Parse
+        Narsil.Bash.Patterns
+        Narsil.Docs.Extract
+        Narsil.Docs.Search
+        Narsil.Docs.Types
+        Narsil.Emit.Config
+        Narsil.Inference.Bash.Constraint
+        Narsil.Inference.Bash.Unify
+        Narsil.Lint.Forbidden
+        Narsil.Core.Log
+        Narsil.Core.Profiles
+        Narsil.LSP.Handlers
+        Narsil.LSP.Handlers.Cursor
+        Narsil.LSP.Handlers.Diagnostics
+        Narsil.LSP.Handlers.Features
+        Narsil.LSP.Handlers.Project
+        Narsil.LSP.Handlers.SemanticTokens
+        Narsil.LSP.Handlers.Symbols
+        Narsil.LSP.ProjectCache
+        Narsil.LSP.Server
+        Narsil.Inference.Nix
+        Narsil.Syntax.Effect
+        Narsil.Inference.Nix.Annotate
+        Narsil.Inference.Nix.Builtins
+        Narsil.Inference.Nix.Constraint
+        Narsil.Inference.Nix.Environment
+        Narsil.Inference.Nix.Lib
+        Narsil.Inference.Nix.Module
+        Narsil.Inference.Nix.Scheme
+        Narsil.Layout.Convention
+        Narsil.Layout.Convention.Types
+        Narsil.Layout.Convention.Presets
+        Narsil.Layout.Convention.Naming
+        Narsil.Layout.Convention.Validate
+        Narsil.Lint.Nix
+        Narsil.Lint.Combined
+        Narsil.Lint.Derivation
+        Narsil.Lint.Packages
+        Narsil.Lint.Patterns
+        Narsil.Layout.Closure
+        Narsil.Layout.Edge
+        Narsil.Layout.Graph
+        Narsil.Layout.Import
+        Narsil.Layout.ModuleKind
+        Narsil.Layout.ModuleSystem
+        Narsil.Layout.Naming
+        Narsil.Syntax.Parse
+        Narsil.Syntax.Format
+        Narsil.Layout.Scope
+        Narsil.Layout.Scope.Types
+        Narsil.Layout.Scope.Build
+        Narsil.Layout.Scope.Resolve
+        Narsil.Layout.Scope.Dhall
+        Narsil.Inference.Nix.Type
+        Narsil.Inference.Nix.Unify
+        Narsil.Syntax.Annotation
+        Narsil.Syntax.Pretty
+        Narsil.Core.Safety
+        Narsil.Inference.Bash.Schema
+        Narsil.Bash.Types
+        Narsil.Core.Span
+        Narsil.Nixpkgs.Index
+        Narsil.Nixpkgs.StorePath
+        Narsil.Nixpkgs.Eval
+        Narsil.Nixpkgs.EvalRepl
+        Narsil.Nixpkgs.Cache
+        Narsil.Nixpkgs.Warm
+        Narsil.Nixpkgs.Oracle
+    build-depends:
+        aeson >= 2.0 && < 2.3,
+        async >= 2.2 && < 2.3,
+        base >= 4.16 && < 4.21,
+        bytestring >= 0.11 && < 0.13,
+        containers >= 0.6 && < 0.8,
+        cryptohash-sha256 >= 0.11 && < 0.12,
+        data-fix >= 0.3 && < 0.4,
+        dhall >= 1.42 && < 1.43,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        hnix >= 0.17 && < 0.18,
+        katip >= 0.8 && < 0.9,
+        lsp >= 2.7 && < 2.8,
+        lsp-types >= 2.3 && < 2.4,
+        megaparsec >= 9.0 && < 10.0,
+        mtl >= 2.3 && < 2.4,
+        prettyprinter >= 1.7 && < 1.8,
+        prettyprinter-ansi-terminal >= 1.1 && < 1.2,
+        process >= 1.6 && < 1.7,
+        ShellCheck >= 0.9 && < 0.12,
+        stm >= 2.5 && < 2.6,
+        text >= 2.0 && < 2.2,
+        transformers >= 0.5 && < 0.7,
+        nixfmt-vendored
+    hs-source-dirs:   lib
+    default-language: GHC2021
+
+executable narsil
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        aeson >= 2.0 && < 2.3,
+        async >= 2.2 && < 2.3,
+        base >= 4.16 && < 4.21,
+        bytestring >= 0.11 && < 0.13,
+        containers >= 0.6 && < 0.8,
+        data-fix >= 0.3 && < 0.4,
+        dhall >= 1.42 && < 1.43,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        hnix >= 0.17 && < 0.18,
+        katip >= 0.8 && < 0.9,
+        megaparsec >= 9.0 && < 10.0,
+        mtl >= 2.3 && < 2.4,
+        narsil,
+        ShellCheck >= 0.9 && < 0.12,
+        text >= 2.0 && < 2.2,
+        transformers >= 0.5 && < 0.7
+    hs-source-dirs:   app
+    default-language: GHC2021
+
+-- straylint — our own Haskell linter, built on GHC's real parser
+-- (ghc-lib-parser), so it sees Template Haskell correctly where tree-sitter /
+-- ast-grep cannot. v1 enforces one rule, the `case` ban; it is the seed of a
+-- larger analyzer (the narsil of Haskell). Independent of the library.
+executable straylint
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        containers >= 0.6 && < 0.8,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        ghc-lib-parser >= 9.12 && < 9.13,
+        ghc-lib-parser-ex >= 9.12 && < 9.13,
+        syb >= 0.7 && < 0.8
+    hs-source-dirs:   straylint
+    default-language: GHC2021
+
+test-suite narsil-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Props.hs
+    other-modules: Adversarial, NixAdversarial, ProjectCacheSpec, Psychotic, LSPFeatureSpec, NixpkgsIndexSpec, NixpkgsCacheSpec, NixpkgsWarmSpec, InferenceOracleSpec, NixpkgsOracleSpec, RowLacksSpec, AnnotateSpec, InferRecursiveSpec, ClosureSpec, MutationSpec, ProfileSpec
+    build-depends:
+        aeson >= 2.0 && < 2.3,
+        async >= 2.2 && < 2.3,
+        base >= 4.16 && < 4.21,
+        bytestring >= 0.11 && < 0.13,
+        containers >= 0.6 && < 0.8,
+        data-fix >= 0.3 && < 0.4,
+        deepseq >= 1.4 && < 1.6,
+        dhall >= 1.42 && < 1.43,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        hnix >= 0.17 && < 0.18,
+        lsp-types >= 2.3 && < 2.4,
+        megaparsec >= 9.0 && < 10.0,
+        mtl >= 2.3 && < 2.4,
+        narsil,
+        QuickCheck >= 2.14 && < 2.16,
+        ShellCheck >= 0.9 && < 0.12,
+        stm >= 2.5 && < 2.6,
+        temporary >= 1.3 && < 1.4,
+        text >= 2.0 && < 2.2,
+        transformers >= 0.5 && < 0.7
+    hs-source-dirs:   test
+    default-language: GHC2021
+
+test-suite narsil-fixtures
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Fixtures.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        containers >= 0.6 && < 0.8,
+        narsil,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+
+test-suite narsil-more-fixtures
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          MoreFixtures.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        containers >= 0.6 && < 0.8,
+        narsil,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+
+test-suite narsil-flake-parts
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          FlakePartsTest.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        containers >= 0.6 && < 0.8,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        narsil,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+
+-- Fixture-driven layout-convention enforcement (8 pass + 8 fail per convention).
+test-suite narsil-layout
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Layout.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        narsil,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+
+-- Differential soundness oracle: compares inferred types against
+-- `nix-instantiate --eval` (builtins.typeOf). Skips cleanly when
+-- nix-instantiate is unavailable (e.g. the sandboxed flake check).
+test-suite narsil-oracle
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Oracle.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        hnix >= 0.17 && < 0.18,
+        narsil,
+        process >= 1.6 && < 1.7,
+        temporary >= 1.3 && < 1.4,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+
+-- The L-size differential oracle: sweep all of (pinned) nixpkgs through the
+-- real check pipeline, ratcheting outcome counts against a committed baseline.
+-- Run on demand / nightly, not part of `cabal test`:
+--   cabal run narsil-oracle-sweep -- --sample 2000
+--   cabal run narsil-oracle-sweep -- --write-baseline
+executable narsil-oracle-fuzz
+    import:           warnings
+    main-is:          OracleFuzz.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        narsil,
+        process >= 1.6 && < 1.7,
+        QuickCheck >= 2.14 && < 2.16,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+    ghc-options: -threaded -rtsopts "-with-rtsopts=-N"
+
+executable narsil-oracle-sweep
+    import:           warnings
+    main-is:          OracleSweep.hs
+    build-depends:
+        aeson >= 2.0 && < 2.3,
+        async >= 2.2 && < 2.3,
+        base >= 4.16 && < 4.21,
+        base16-bytestring >= 1.0 && < 1.1,
+        containers >= 0.6 && < 0.8,
+        cryptohash-sha256 >= 0.11 && < 0.12,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        lsp-types >= 2.3 && < 2.4,
+        narsil,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   test
+    default-language: GHC2021
+    ghc-options: -threaded -rtsopts "-with-rtsopts=-N -A32m"
+
+benchmark narsil-bench
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Bench.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        containers >= 0.6 && < 0.8,
+        data-fix >= 0.3 && < 0.4,
+        deepseq >= 1.4 && < 1.6,
+        hnix >= 0.17 && < 0.18,
+        narsil,
+        tasty-bench >= 0.3 && < 0.5,
+        text >= 2.0 && < 2.2
+    hs-source-dirs:   bench
+    default-language: GHC2021
+    ghc-options: -rtsopts "-with-rtsopts=-A32m"
+
+benchmark narsil-nixpkgs-bench
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          NixpkgsBench.hs
+    build-depends:
+        base >= 4.16 && < 4.21,
+        containers >= 0.6 && < 0.8,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        narsil,
+        process >= 1.6 && < 1.7,
+        text >= 2.0 && < 2.2,
+        time >= 1.12 && < 1.15
+    hs-source-dirs:   bench
+    default-language: GHC2021
+    ghc-options: -threaded -rtsopts "-with-rtsopts=-N -A32m"

@@ -1,0 +1,32 @@
+{ lib, flake-parts-lib, ... }:
+let
+  # :: a
+  # :: a
+  inherit (lib)
+    mkOption
+    types
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkTransposedPerSystemModule
+    ;
+in
+mkTransposedPerSystemModule {
+  # :: "packages"
+  name = "packages";
+  # :: a
+  option = mkOption {
+    # :: a
+    type = types.lazyAttrsOf types.package;
+    # :: {}
+    default = { };
+    # :: String
+    description = ''
+      An attribute set of packages to be built by [`nix build`](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-build.html).
+
+      `nix build .#<name>` will build `packages.<name>`.
+    '';
+  };
+  # :: Path
+  file = ./packages.nix;
+}

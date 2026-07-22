@@ -1,0 +1,87 @@
+{ lib, flake-parts-lib, ... }:
+let
+  # :: a
+  # :: a
+  inherit (lib)
+    mkOption
+    types
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkTransposedPerSystemModule
+    ;
+
+  # :: a
+  programType = lib.types.coercedTo derivationType lib.getExe lib.types.str;
+
+  # :: { check : a }
+  derivationType = lib.types.package // {
+    # :: a
+    check = lib.isDerivation;
+  };
+
+  # :: a
+  appType = lib.types.submodule {
+    # :: { meta : c, program : b, type : a }
+    options = {
+      # :: a
+      type = mkOption {
+        # :: a
+        type = lib.types.enum [ "app" ];
+        # :: "app"
+        default = "app";
+        # :: String
+        description = ''
+          A type tag for `apps` consumers.
+        '';
+      };
+      # :: a
+      program = mkOption {
+        # :: a
+        type = programType;
+        # :: String
+        description = ''
+          A path to an executable or a derivation with `meta.mainProgram`.
+        '';
+      };
+      # :: a
+      meta = mkOption {
+        # :: a
+        type = types.lazyAttrsOf lib.types.raw;
+        # :: {}
+        default = { };
+        # TODO refer to Nix manual 2.25
+        # :: String
+        description = ''
+          Metadata information about the app.
+          Standardized in Nix at <https://github.com/NixOS/nix/pull/11297>.
+
+          Note: `nix flake check` is only aware of the `description` attribute in `meta`.
+        '';
+      };
+    };
+  };
+in
+mkTransposedPerSystemModule {
+  # :: "apps"
+  name = "apps";
+  # :: a
+  option = mkOption {
+    # :: a
+    type = types.lazyAttrsOf appType;
+    # :: {}
+    default = { };
+    # :: String
+    description = ''
+      Programs runnable with nix run `<name>`.
+    '';
+    # :: a
+    example = lib.literalExpression ''
+      {
+        default.program = "''${config.packages.hello}/bin/hello";
+      }
+    '';
+  };
+  # :: Path
+  file = ./apps.nix;
+}

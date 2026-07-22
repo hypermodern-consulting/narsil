@@ -1,0 +1,50 @@
+{
+  # :: "Description for the project"
+  description = "Description for the project";
+
+  # :: {}
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+    mission-control.url = "github:Platonic-Systems/mission-control";
+    flake-root.url = "github:srid/flake-root";
+  };
+
+  # :: { flake-parts : a } | ... -> b
+  outputs = inputs@{ flake-parts, ... }:
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      # :: [a]
+      imports = [
+        inputs.mission-control.flakeModule
+        inputs.flake-root.flakeModule
+      ];
+      # :: ["x86_64-linux" | "aarch64-darwin" | "x86_64-darwin"]
+      systems = [ "x86_64-linux" "aarch64-darwin" "x86_64-darwin" ];
+      # :: { config : a, inputs' : c, pkgs : d, self' : b, system : e } | ... -> { mission-control : { scripts : { build : { category : "Development", description : "convert files from .avdl to .avsc", exec : String } }, wrapperName : "run" } }
+      perSystem = { config, self', inputs', pkgs, system, ... }: {
+        devShells.default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [ avro-tools ];
+          inputsFrom = [ config.mission-control.devShell config.flake-root.devShell ];
+        };
+        # :: { scripts : { build : { category : "Development", description : "convert files from .avdl to .avsc", exec : String } }, wrapperName : "run" }
+        mission-control = {
+          # :: "run"
+          wrapperName = "run";
+          # :: { build : { category : "Development", description : "convert files from .avdl to .avsc", exec : String } }
+          scripts = {
+            # :: { category : "Development", description : "convert files from .avdl to .avsc", exec : String }
+            build = {
+              # :: "convert files from .avdl to .avsc"
+              description = "convert files from .avdl to .avsc";
+              # :: String
+              exec = ''
+                avro-tools idl2schemata "$FLAKE_ROOT/Hello.avdl" .
+              '';
+              # :: "Development"
+              category = "Development";
+            };
+          };
+        };
+      };
+    };
+}

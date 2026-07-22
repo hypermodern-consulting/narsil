@@ -1,0 +1,60 @@
+{ config, lib, inputs, self, withSystem, ... }:
+
+{
+  # :: [a]
+  imports = [
+    inputs.pre-commit-hooks-nix.flakeModule
+    inputs.hercules-ci-effects.flakeModule # herculesCI attr
+  ];
+  # :: ["x86_64-linux" | "aarch64-darwin"]
+  systems = [ "x86_64-linux" "aarch64-darwin" ];
+
+  hercules-ci.flake-update = {
+    enable = true;
+    autoMergeMethod = "merge";
+    when.dayOfMonth = 1;
+    flakes = {
+      "." = { };
+      "dev" = { };
+    };
+  };
+
+  # :: { config : a, pkgs : b } | ... -> { pre-commit : { pkgs : b, settings : {} } }
+  perSystem = { config, pkgs, ... }: {
+
+    devShells.default = pkgs.mkShell {
+      nativeBuildInputs = [
+        pkgs.nixpkgs-fmt
+        pkgs.hci
+      ];
+      shellHook = ''
+        ${config.pre-commit.shellHook}
+      '';
+    };
+
+    # :: { pkgs : a, settings : {} }
+    pre-commit = {
+      inherit pkgs; # should make this default to the one it can get via follows
+      # :: {}
+      settings = {
+        hooks.nixpkgs-fmt.enable = true;
+      };
+    };
+
+    checks.eval-tests =
+      let tests = import ./tests/eval-tests.nix { flake-parts = self; };
+      in tests.runTests pkgs.emptyFile // { internals = tests; };
+
+  };
+  # :: {}
+  flake = {
+    # for repl exploration / debug
+    config.config = config;
+    options.mySystem = lib.mkOption { default = config.allSystems.${builtins.currentSystem}; };
+    config.effects = withSystem "x86_64-linux" ({ pkgs, hci-effects, ... }: {
+      tests = {
+        template = pkgs.callPackage ./tests/template.nix { inherit hci-effects; };
+      };
+    });
+  };
+}

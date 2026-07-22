@@ -1,0 +1,1782 @@
+# nix/flake-modules/main.nix
+#
+# Isospin flake-parts modules
+#
+# Provides:
+# - Rust vendor derivation with patches
+# - Static library builds (aws-lc, libseccomp)
+# - Development shell with Buck2 toolchain
+# - Scripts for common operations
+#
+{ inputs, ... }:
+let
+  # ══════════════════════════════════════════════════════════════════════════════
+  # RUST TOOLCHAIN MODULE
+  # ══════════════════════════════════════════════════════════════════════════════
+  # :: { config : b, lib : a } | ... -> { _class : "flake" }
+  rustToolchainModule =
+    {
+      lib,
+      config,
+      ...
+    }:
+    {
+      # :: "flake"
+      _class = "flake";
+
+      options.isospin.rust = {
+        version = lib.mkOption {
+          type = lib.types.str;
+          default = "1.89.0";
+          description = "Rust toolchain version";
+        };
+
+        targets = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [
+            "x86_64-unknown-linux-gnu"
+            "aarch64-unknown-linux-gnu"
+          ];
+          description = "Rust compilation targets";
+        };
+      };
+
+      config.perSystem =
+        { pkgs, ... }:
+        let
+          cfg = config.isospin.rust;
+          overlays = [ (import inputs.rust-overlay) ];
+          pkgsWithRust = import inputs.nixpkgs {
+            inherit (pkgs) system;
+            inherit overlays;
+          };
+        in
+        {
+          _module.args.rustToolchain = pkgsWithRust.rust-bin.stable.${cfg.version}.default.override {
+            extensions = [
+              "rust-src"
+              "rust-analyzer"
+              "rustfmt"
+              "clippy"
+            ];
+            targets = cfg.targets;
+          };
+        };
+    };
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # VENDOR MODULE
+  # Rust crate vendoring with patches for vm-memory 0.18 compatibility
+  # ══════════════════════════════════════════════════════════════════════════════
+  # :: { config : b, lib : a } | ... -> { _class : "flake" }
+  vendorModule =
+    {
+      lib,
+      config,
+      ...
+    }:
+    {
+      # :: "flake"
+      _class = "flake";
+
+      options.isospin.vendor = {
+        lockFile = lib.mkOption {
+          type = lib.types.path;
+          description = "Path to Cargo.lock";
+        };
+
+        fixupsDir = lib.mkOption {
+          type = lib.types.path;
+          description = "Path to fixups directory";
+        };
+
+        outputHashes = lib.mkOption {
+          type = lib.types.attrsOf lib.types.str;
+          default = { };
+          description = "Output hashes for git dependencies";
+        };
+      };
+
+      config.perSystem =
+        { pkgs, ... }:
+        let
+          cfg = config.isospin.vendor;
+          sed = "${pkgs.gnused}/bin/sed";
+
+          vendorBase = pkgs.rustPlatform.importCargoLock {
+            inherit (cfg) lockFile outputHashes;
+          };
+
+          # Fetch acpi_tables from rust-vmm (needed by Cloud Hypervisor)
+          acpiTablesSrc = pkgs.fetchFromGitHub {
+            owner = "rust-vmm";
+            repo = "acpi_tables";
+            rev = "e08a3f0b0a59b98859dbf59f5aa7fd4d2eb4018a";
+            hash = "sha256-ykg3UFX/8r8uYlbBxHfRHElH7qGHQIfCJ8VTjxOD+Hk=";
+          };
+
+          # Patched vendor with vm-memory 0.18 fixes
+          vendorPatched =
+            pkgs.runCommand "rust-vendor-patched"
+              {
+                inherit (cfg) fixupsDir;
+                inherit acpiTablesSrc;
+                nativeBuildInputs = [ pkgs.perl ];
+              }
+              ''
+                mkdir -p $out
+                cp -rL ${vendorBase}/* $out/
+                chmod -R u+w $out
+
+                # ─────────────────────────────────────────────────────────────────────
+                # Add acpi_tables from rust-vmm git (needed by Cloud Hypervisor)
+                # ─────────────────────────────────────────────────────────────────────
+                mkdir -p $out/acpi_tables-0.1.0
+                cp -r $acpiTablesSrc/* $out/acpi_tables-0.1.0/
+                chmod -R u+w $out/acpi_tables-0.1.0
+                echo "Added acpi_tables from rust-vmm git"
+
+                # ─────────────────────────────────────────────────────────────────────
+                # Cargo.toml version constraint patches
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/linux-loader-0.13.2 ]; then
+                      ${sed} -i 's/<=0.17.1/<=0.18.0/g' $out/linux-loader-0.13.2/Cargo.toml
+                      echo "Patched linux-loader-0.13.2 Cargo.toml"
+                    fi
+
+                    for crate in virtio-queue-0.16.0 vhost-user-backend-0.20.0 vfio-ioctls-0.5.2 vfio_user-0.1.2; do
+                      if [ -d $out/$crate ]; then
+                        ${sed} -i 's/"0.16"/">=0.16, <=0.18"/g' $out/$crate/Cargo.toml
+                        echo "Patched $crate Cargo.toml"
+                      fi
+                    done
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # rustix extern crate errno fix
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/rustix-1.1.3 ]; then
+                      for file in io/errno.rs fs/dir.rs event/syscalls.rs fs/syscalls.rs process/syscalls.rs; do
+                        filepath="$out/rustix-1.1.3/src/backend/libc/$file"
+                        if [ -f "$filepath" ]; then
+                          ${sed} -i '0,/^use /{s/^use /extern crate errno as libc_errno;\n\nuse /}' "$filepath"
+                          echo "Patched rustix: $file"
+                        fi
+                      done
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # linux-loader vm-memory 0.18 GuestMemoryBackend bounds
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/linux-loader-0.13.2 ]; then
+                      for file in \
+                        $out/linux-loader-0.13.2/src/configurator/fdt.rs \
+                        $out/linux-loader-0.13.2/src/configurator/mod.rs \
+                        $out/linux-loader-0.13.2/src/configurator/x86_64/linux.rs \
+                        $out/linux-loader-0.13.2/src/configurator/x86_64/pvh.rs \
+                        $out/linux-loader-0.13.2/src/loader/bzimage/mod.rs \
+                        $out/linux-loader-0.13.2/src/loader/elf/mod.rs \
+                        $out/linux-loader-0.13.2/src/loader/mod.rs \
+                        $out/linux-loader-0.13.2/src/loader/pe/mod.rs
+                      do
+                        if [ -f "$file" ]; then
+                          ${sed} -i 's/M: GuestMemory,$/M: GuestMemory + GuestMemoryBackend,/g' "$file"
+                          ${sed} -i 's/M: GuestMemory;$/M: GuestMemory + GuestMemoryBackend;/g' "$file"
+                          ${sed} -i 's/<F, M: GuestMemory>/<F, M: GuestMemory + GuestMemoryBackend>/g' "$file"
+                          ${sed} -i 's/<M: GuestMemory>/<M: GuestMemory + GuestMemoryBackend>/g' "$file"
+                        fi
+                      done
+
+                      # Add GuestMemoryBackend to imports
+                      ${sed} -i 's/use vm_memory::{Bytes, GuestMemory};/use vm_memory::{Bytes, GuestMemory, GuestMemoryBackend};/g' \
+                        $out/linux-loader-0.13.2/src/configurator/fdt.rs
+                      ${sed} -i 's/use vm_memory::{Address, ByteValued, GuestAddress, GuestMemory};/use vm_memory::{Address, ByteValued, GuestAddress, GuestMemory, GuestMemoryBackend};/g' \
+                        $out/linux-loader-0.13.2/src/configurator/mod.rs
+                      ${sed} -i 's/use vm_memory::{Bytes, GuestMemory};/use vm_memory::{Bytes, GuestMemory, GuestMemoryBackend};/g' \
+                        $out/linux-loader-0.13.2/src/configurator/x86_64/linux.rs
+                      ${sed} -i 's/use vm_memory::{ByteValued, Bytes, GuestMemory};/use vm_memory::{ByteValued, Bytes, GuestMemory, GuestMemoryBackend};/g' \
+                        $out/linux-loader-0.13.2/src/configurator/x86_64/pvh.rs
+                      ${sed} -i 's/GuestMemory, GuestUsize, ReadVolatile};/GuestMemory, GuestMemoryBackend, GuestUsize, ReadVolatile};/g' \
+                        $out/linux-loader-0.13.2/src/loader/bzimage/mod.rs \
+                        $out/linux-loader-0.13.2/src/loader/elf/mod.rs \
+                        $out/linux-loader-0.13.2/src/loader/mod.rs \
+                        $out/linux-loader-0.13.2/src/loader/pe/mod.rs
+
+                      echo "Patched linux-loader-0.13.2 for vm-memory 0.18"
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # virtio-queue vm-memory 0.18 GuestMemoryBackend bounds
+                    # vm-memory 0.18 moved the R associated type from GuestMemory to GuestMemoryBackend
+                    # We need to:
+                    # 1. Replace GuestMemory::R with GuestMemoryBackend::R
+                    # 2. Add GuestMemoryBackend bounds where GuestMemory is used
+                    # 3. Update imports to include GuestMemoryBackend
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/virtio-queue-0.16.0 ]; then
+                      # First, replace GuestMemory::R with GuestMemoryBackend::R in all files
+                      for file in \
+                        $out/virtio-queue-0.16.0/src/chain.rs \
+                        $out/virtio-queue-0.16.0/src/lib.rs \
+                        $out/virtio-queue-0.16.0/src/queue.rs \
+                        $out/virtio-queue-0.16.0/src/queue_sync.rs \
+                        $out/virtio-queue-0.16.0/src/descriptor_utils.rs
+                      do
+                        if [ -f "$file" ]; then
+                          # Replace <X as GuestMemory>::R with <X as GuestMemoryBackend>::R
+                          ${sed} -i 's/as GuestMemory>::R/as GuestMemoryBackend>::R/g' "$file"
+                          
+                          # Add GuestMemoryBackend bound where GuestMemory is used (various patterns)
+                          # Handle "M::Target: GuestMemory" patterns
+                          ${sed} -i 's/M::Target: GuestMemory,$/M::Target: GuestMemory + GuestMemoryBackend,/g' "$file"
+                          ${sed} -i 's/M::Target: GuestMemory$/M::Target: GuestMemory + GuestMemoryBackend/g' "$file"
+                          ${sed} -i 's/M::Target: GuestMemory + Sized,$/M::Target: GuestMemory + GuestMemoryBackend + Sized,/g' "$file"
+                          ${sed} -i 's/M::Target: GuestMemory + Sized$/M::Target: GuestMemory + GuestMemoryBackend + Sized/g' "$file"
+                          
+                          # Handle "T::Target: GuestMemory + Sized" patterns (for DescriptorChain<T>)
+                          ${sed} -i 's/T::Target: GuestMemory + Sized,$/T::Target: GuestMemory + GuestMemoryBackend + Sized,/g' "$file"
+                          ${sed} -i 's/T::Target: GuestMemory + Sized$/T::Target: GuestMemory + GuestMemoryBackend + Sized/g' "$file"
+                          
+                          # Handle fn signatures like "fn is_valid<M: GuestMemory>(&self, mem: &M)"
+                          ${sed} -i 's/<M: GuestMemory>(&self/<M: GuestMemory + GuestMemoryBackend>(\&self/g' "$file"
+                          ${sed} -i 's/<M: GuestMemory>(&mut self/<M: GuestMemory + GuestMemoryBackend>(\&mut self/g' "$file"
+                          ${sed} -i 's/<M: GuestMemory>($/\<M: GuestMemory + GuestMemoryBackend>(/g' "$file"
+                          
+                          # Handle "M: GuestMemory," and "M: GuestMemory;" patterns (trait method bounds)
+                          ${sed} -i 's/M: GuestMemory,$/M: GuestMemory + GuestMemoryBackend,/g' "$file"
+                          ${sed} -i 's/M: GuestMemory;$/M: GuestMemory + GuestMemoryBackend;/g' "$file"
+                          
+                          # Handle "M: GuestMemory + ?Sized" patterns
+                          ${sed} -i 's/M: GuestMemory + ?Sized;/M: GuestMemory + GuestMemoryBackend + ?Sized;/g' "$file"
+                          ${sed} -i 's/M: GuestMemory + ?Sized,/M: GuestMemory + GuestMemoryBackend + ?Sized,/g' "$file"
+                        fi
+                      done
+
+                      # Fix imports in chain.rs
+                      ${sed} -i 's/use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryRegion};/use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryBackend, GuestMemoryRegion};/g' \
+                        $out/virtio-queue-0.16.0/src/chain.rs
+
+                      # Fix imports in lib.rs - the actual import format is different
+                      ${sed} -i 's/use vm_memory::{GuestMemory, GuestMemoryError/use vm_memory::{GuestMemory, GuestMemoryBackend, GuestMemoryError/g' \
+                        $out/virtio-queue-0.16.0/src/lib.rs
+                      # Also fix the iter trait method bound at the end of file
+                      ${sed} -i 's/M::Target: GuestMemory;$/M::Target: GuestMemory + GuestMemoryBackend;/g' \
+                        $out/virtio-queue-0.16.0/src/lib.rs
+
+                      # Fix imports in queue.rs
+                      ${sed} -i 's/use vm_memory::{Address, Bytes, GuestAddress, GuestMemory};/use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryBackend};/g' \
+                        $out/virtio-queue-0.16.0/src/queue.rs
+
+                      # Fix imports in queue_sync.rs
+                      ${sed} -i 's/use vm_memory::GuestMemory;/use vm_memory::{GuestMemory, GuestMemoryBackend};/g' \
+                        $out/virtio-queue-0.16.0/src/queue_sync.rs
+
+                      # Fix imports in descriptor_utils.rs - need to add GuestMemoryBackend
+                      # The import looks like:
+                      # use vm_memory::{
+                      #     Address, ByteValued, GuestMemory, GuestMemoryRegion, MemoryRegionAddress, VolatileSlice,
+                      # };
+                      ${sed} -i 's/Address, ByteValued, GuestMemory, GuestMemoryRegion, MemoryRegionAddress/Address, ByteValued, GuestMemory, GuestMemoryBackend, GuestMemoryRegion, MemoryRegionAddress/g' \
+                        $out/virtio-queue-0.16.0/src/descriptor_utils.rs
+
+                      echo "Patched virtio-queue-0.16.0 for vm-memory 0.18"
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # vfio-ioctls vm-memory 0.18 GuestMemoryBackend bounds
+                    # The iter() method moved from GuestMemory to GuestMemoryBackend
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/vfio-ioctls-0.5.2 ]; then
+                      # Add GuestMemoryBackend bound to functions that call .iter()
+                      ${sed} -i 's/<M: GuestMemory>(&self, mem: &M)/<M: GuestMemory + GuestMemoryBackend>(\&self, mem: \&M)/g' \
+                        $out/vfio-ioctls-0.5.2/src/vfio_device.rs
+                      
+                      # Add import - actual format is: use vm_memory::{Address, GuestMemory, GuestMemoryRegion, MemoryRegionAddress};
+                      ${sed} -i 's/use vm_memory::{Address, GuestMemory, GuestMemoryRegion/use vm_memory::{Address, GuestMemory, GuestMemoryBackend, GuestMemoryRegion/g' \
+                        $out/vfio-ioctls-0.5.2/src/vfio_device.rs
+                      
+                      echo "Patched vfio-ioctls-0.5.2 for vm-memory 0.18"
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # vhost-0.14.0 vm-memory 0.18 compatibility
+                    # vm_memory::Error was removed in 0.18
+                    # The old code used: .map_err(MmapError::MmapRegion).map_err(|e| Error::ReqHandlerError(...))
+                    # In vm-memory 0.18, MmapRegionError::Mmap(io::Error) replaces the old variant
+                    # Since we're just converting to io::Error anyway, simplify the chain
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/vhost-0.14.0 ]; then
+                      # Remove the MmapError import entirely (not needed anymore)
+                      ${sed} -i 's/use vm_memory::{mmap::NewBitmap, ByteValued, Error as MmapError, FileOffset, MmapRegion};/use vm_memory::{mmap::NewBitmap, ByteValued, FileOffset, MmapRegion};/g' \
+                        $out/vhost-0.14.0/src/vhost_user/message.rs
+                      
+                      # Delete the entire line that wraps with MmapError::MmapRegion
+                      # The next .map_err will handle the raw error directly
+                      ${sed} -i '/\.map_err(MmapError::MmapRegion)/d' \
+                        $out/vhost-0.14.0/src/vhost_user/message.rs
+                      
+                      echo "Patched vhost-0.14.0 for vm-memory 0.18"
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # vhost-0.15.0 vm-memory 0.18 GuestMemoryBackend bounds
+                    # address_in_range and get_host_address are on GuestMemoryBackend
+                    # The strategy: Add bounds to concrete impls, not the trait associated type
+                    # (Adding where clause to associated type causes recursive type evaluation)
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/vhost-0.15.0 ]; then
+                      # Add GuestMemoryBackend import to vhost_kern/mod.rs
+                      ${sed} -i 's/use vm_memory::{Address, GuestAddress, GuestAddressSpace, GuestMemory, GuestUsize};/use vm_memory::{Address, GuestAddress, GuestAddressSpace, GuestMemory, GuestMemoryBackend, GuestUsize};/g' \
+                        $out/vhost-0.15.0/src/vhost_kern/mod.rs
+
+                      # Add where clause to is_valid method (uses address_in_range)
+                      ${sed} -i 's/fn is_valid(\&self, config_data: \&VringConfigData) -> bool {/fn is_valid(\&self, config_data: \&VringConfigData) -> bool where <Self::AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/mod.rs
+
+                      # Add bound to VhostBackend blanket impl  
+                      ${sed} -i 's/impl<T: VhostKernBackend> VhostBackend for T {/impl<T: VhostKernBackend> VhostBackend for T where <<T as VhostKernBackend>::AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/mod.rs
+
+                      # Add bound to VhostIotlbBackend blanket impl
+                      ${sed} -i 's/impl<I: VhostKernBackend + VhostKernFeatures> VhostIotlbBackend for I {/impl<I: VhostKernBackend + VhostKernFeatures> VhostIotlbBackend for I where <<I as VhostKernBackend>::AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/mod.rs
+
+                      # Add bound to to_vhost_vring_addr function  
+                      ${sed} -i 's/pub fn to_vhost_vring_addr<AS: GuestAddressSpace>(/pub fn to_vhost_vring_addr<AS: GuestAddressSpace + Clone>(/g' \
+                        $out/vhost-0.15.0/src/vhost_kern/mod.rs
+                      # Use perl for multi-line replacement since sed is tricky
+                      perl -i -0pe 's/(pub fn to_vhost_vring_addr<AS: GuestAddressSpace \+ Clone>\(\s*\&self,\s*queue_index: usize,\s*mem: \&AS,\s*\) -> Result<vhost_vring_addr>) \{/$1\n    where\n        <AS as GuestAddressSpace>::M: GuestMemoryBackend,\n    {/s' \
+                        $out/vhost-0.15.0/src/vhost_kern/mod.rs
+                      
+                      # Add bounds to concrete vdpa impl + import
+                      ${sed} -i 's/use vm_memory::GuestAddressSpace;/use vm_memory::{GuestAddressSpace, GuestMemoryBackend};/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vdpa.rs
+                      # Inherent impl needs bound (calls is_valid from VhostKernBackend)
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> VhostKernVdpa<AS> {/impl<AS: GuestAddressSpace> VhostKernVdpa<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vdpa.rs
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> VhostKernBackend for VhostKernVdpa<AS> {/impl<AS: GuestAddressSpace> VhostKernBackend for VhostKernVdpa<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vdpa.rs
+                      # VhostVdpa impl also needs the bound (calls send_iotlb_msg via VhostIotlbBackend)
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> VhostVdpa for VhostKernVdpa<AS> {/impl<AS: GuestAddressSpace> VhostVdpa for VhostKernVdpa<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vdpa.rs
+                      # VhostKernFeatures impl also needs the bound for consistency
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> VhostKernFeatures for VhostKernVdpa<AS> {/impl<AS: GuestAddressSpace> VhostKernFeatures for VhostKernVdpa<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vdpa.rs
+                      # AsRawFd impl needs bound too (struct fields use AS)
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> AsRawFd for VhostKernVdpa<AS> {/impl<AS: GuestAddressSpace> AsRawFd for VhostKernVdpa<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vdpa.rs
+
+                      # Add bounds to concrete net impl + import (if net feature is enabled)
+                      ${sed} -i 's/use vm_memory::GuestAddressSpace;/use vm_memory::{GuestAddressSpace, GuestMemoryBackend};/' \
+                        $out/vhost-0.15.0/src/vhost_kern/net.rs
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> VhostKernBackend for Net<AS> {/impl<AS: GuestAddressSpace> VhostKernBackend for Net<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/net.rs
+
+                      # Add bounds to concrete vsock impl + import (if vsock feature is enabled)
+                      ${sed} -i 's/use vm_memory::GuestAddressSpace;/use vm_memory::{GuestAddressSpace, GuestMemoryBackend};/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vsock.rs
+                      ${sed} -i 's/impl<AS: GuestAddressSpace> VhostKernBackend for Vsock<AS> {/impl<AS: GuestAddressSpace> VhostKernBackend for Vsock<AS> where <AS as GuestAddressSpace>::M: GuestMemoryBackend {/' \
+                        $out/vhost-0.15.0/src/vhost_kern/vsock.rs
+                      
+                      echo "Patched vhost-0.15.0 for vm-memory 0.18"
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # vhost-user-backend vm-memory 0.18 GuestMemoryBackend bounds
+                    # The impl blocks need GuestMemoryBackend bounds for methods that
+                    # interact with virtio-queue (which now requires GuestMemoryBackend)
+                    # ─────────────────────────────────────────────────────────────────────
+                    if [ -d $out/vhost-user-backend-0.20.0 ]; then
+                      # Add GuestMemoryBackend import to vring.rs
+                      ${sed} -i 's/use vm_memory::{GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};/use vm_memory::{GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryBackend, GuestMemoryMmap};/g' \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      
+                      # Add bounds to VringState impl
+                      ${sed} -i 's/impl<M: GuestAddressSpace> VringState<M> {/impl<M: GuestAddressSpace> VringState<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g' \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      
+                      # Add bounds to VringMutex impl
+                      ${sed} -i 's/impl<M: GuestAddressSpace> VringMutex<M> {/impl<M: GuestAddressSpace> VringMutex<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g' \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      
+                      # Add bounds to VringRwLock impl
+                      ${sed} -i 's/impl<M: GuestAddressSpace> VringRwLock<M> {/impl<M: GuestAddressSpace> VringRwLock<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g' \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      
+                      # Add bounds to VringStateGuard impls
+                      ${sed} -i "s/impl<'a, M: 'a + GuestAddressSpace> VringStateGuard<'a, M> for VringMutex<M> {/impl<'a, M: 'a + GuestAddressSpace> VringStateGuard<'a, M> for VringMutex<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g" \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      ${sed} -i "s/impl<'a, M: 'a + GuestAddressSpace> VringStateMutGuard<'a, M> for VringMutex<M> {/impl<'a, M: 'a + GuestAddressSpace> VringStateMutGuard<'a, M> for VringMutex<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g" \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      ${sed} -i "s/impl<'a, M: 'a + GuestAddressSpace> VringStateGuard<'a, M> for VringRwLock<M> {/impl<'a, M: 'a + GuestAddressSpace> VringStateGuard<'a, M> for VringRwLock<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g" \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      ${sed} -i "s/impl<'a, M: 'a + GuestAddressSpace> VringStateMutGuard<'a, M> for VringRwLock<M> {/impl<'a, M: 'a + GuestAddressSpace> VringStateMutGuard<'a, M> for VringRwLock<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g" \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      
+                      # Add bounds to VringT impls
+                      ${sed} -i "s/impl<M: 'static + GuestAddressSpace> VringT<M> for VringMutex<M> {/impl<M: 'static + GuestAddressSpace> VringT<M> for VringMutex<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g" \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      ${sed} -i "s/impl<M: 'static + GuestAddressSpace> VringT<M> for VringRwLock<M> {/impl<M: 'static + GuestAddressSpace> VringT<M> for VringRwLock<M> where <M as GuestAddressSpace>::M: GuestMemoryBackend {/g" \
+                        $out/vhost-user-backend-0.20.0/src/vring.rs
+                      
+                      echo "Patched vhost-user-backend-0.20.0 vring.rs for vm-memory 0.18"
+                      
+                      # Add GuestMemoryBackend import to handler.rs
+                      ${sed} -i 's/use vm_memory::{GuestAddress, GuestAddressSpace, GuestMemory, GuestMemoryMmap, GuestRegionMmap};/use vm_memory::{GuestAddress, GuestAddressSpace, GuestMemory, GuestMemoryBackend, GuestMemoryMmap, GuestRegionMmap};/g' \
+                        $out/vhost-user-backend-0.20.0/src/handler.rs
+                      
+                      # GuestRegionMmap::new now returns Option, not Result
+                      # Only patch the two specific GuestRegionMmap::new calls (not other map_err calls)
+                      # The pattern is:
+                      # GuestRegionMmap::new(
+                      #     region.mmap_region(file)?,
+                      #     GuestAddress(region.guest_phys_addr),
+                      # )
+                      # .map_err(|e| {
+                      #     VhostUserError::ReqHandlerError(io::Error::new(io::ErrorKind::Other, e))
+                      # })?;
+                      #
+                      # There are exactly 2 of these patterns in handler.rs
+                      # Use awk to handle multi-line patterns properly
+                      
+                      awk '
+                        /GuestRegionMmap::new\(/ { in_grm = 1 }
+                        in_grm && /\.map_err\(\|e\| \{/ {
+                          gsub(/\.map_err\(\|e\| \{/, ".ok_or_else(|| {")
+                          in_grm = 0
+                          next_replace = 1
+                        }
+                        next_replace && /VhostUserError::ReqHandlerError\(io::Error::new\(io::ErrorKind::Other, e\)\)/ {
+                          gsub(/, e\)/, ", \"GuestRegionMmap overflow\")")
+                          next_replace = 0
+                        }
+                        { print }
+                      ' $out/vhost-user-backend-0.20.0/src/handler.rs > $out/vhost-user-backend-0.20.0/src/handler.rs.tmp && \
+                        mv $out/vhost-user-backend-0.20.0/src/handler.rs.tmp $out/vhost-user-backend-0.20.0/src/handler.rs
+                      
+                      echo "Patched vhost-user-backend-0.20.0 handler.rs for vm-memory 0.18"
+                    fi
+
+                    # ─────────────────────────────────────────────────────────────────────
+                    # Apply overlay files from fixups
+                    # ─────────────────────────────────────────────────────────────────────
+                    for fixup in $fixupsDir/*/overlay; do
+                      if [ -d "$fixup" ]; then
+                        crate=$(basename $(dirname $fixup))
+                        for vendor_crate in $out/$crate-*; do
+                          if [ -d "$vendor_crate" ]; then
+                            mkdir -p "$vendor_crate/out"
+                            cp -r "$fixup"/* "$vendor_crate/out/" 2>/dev/null || true
+                            echo "Applied overlay for $crate"
+                          fi
+                        done
+                      fi
+                    done
+              '';
+        in
+        {
+          _module.args.rustVendor = vendorPatched;
+        };
+    };
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # STATIC LIBS MODULE
+  # aws-lc and libseccomp static builds
+  # ══════════════════════════════════════════════════════════════════════════════
+  # :: { config : b, lib : a } | ... -> { _class : "flake" }
+  staticLibsModule =
+    {
+      lib,
+      config,
+      ...
+    }:
+    {
+      # :: "flake"
+      _class = "flake";
+
+      options.isospin.static-libs = {
+        aws-lc-prefix-headers = lib.mkOption {
+          type = lib.types.path;
+          description = "Path to aws-lc prefix headers";
+        };
+      };
+
+      config.perSystem =
+        { pkgs, ... }:
+        let
+          cfg = config.isospin.static-libs;
+
+          libseccompStatic = pkgs.libseccomp.overrideAttrs (old: {
+            dontDisableStatic = true;
+            configureFlags = (old.configureFlags or [ ]) ++ [
+              "--enable-static"
+              "--disable-shared"
+            ];
+          });
+
+          awsLcStatic = pkgs.aws-lc.overrideAttrs (old: {
+            cmakeFlags = (old.cmakeFlags or [ ]) ++ [
+              "-DBUILD_SHARED_LIBS=OFF"
+              "-DBORINGSSL_PREFIX=aws_lc_0_35_0"
+              "-DBORINGSSL_PREFIX_HEADERS=${cfg.aws-lc-prefix-headers}"
+            ];
+            postInstall = ''
+              if [ -f $out/lib/libcrypto.a ]; then
+                cp $out/lib/libcrypto.a $out/lib/libaws_lc_0_35_0_crypto.a
+              fi
+              if [ -f $out/lib/libssl.a ]; then
+                cp $out/lib/libssl.a $out/lib/libaws_lc_0_35_0_ssl.a
+              fi
+            '';
+          });
+
+          # Static zstd for zstd-sys crate
+          zstdStatic = (pkgs.zstd.override { static = true; }).out;
+        in
+        {
+          _module.args = {
+            inherit libseccompStatic awsLcStatic zstdStatic;
+          };
+        };
+    };
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # DEVSHELL MODULE
+  # ══════════════════════════════════════════════════════════════════════════════
+  # :: { config : b, lib : a } | ... -> { _class : "flake" }
+  devshellModule =
+    { lib, config, ... }:
+    {
+      # :: "flake"
+      _class = "flake";
+
+      options.isospin.devshell = {
+        enable = lib.mkEnableOption "isospin development shell" // {
+          default = true;
+        };
+
+        extra-packages = lib.mkOption {
+          type = lib.types.functionTo (lib.types.listOf lib.types.package);
+          default = _: [ ];
+          description = "Extra packages (receives pkgs)";
+        };
+      };
+
+      config.perSystem =
+        {
+          pkgs,
+          rustToolchain,
+          rustVendor,
+          libseccompStatic,
+          awsLcStatic,
+          zstdStatic,
+          ...
+        }:
+        let
+          cfg = config.isospin.devshell;
+        in
+        lib.mkIf cfg.enable {
+          devShells.default = pkgs.mkShell {
+            buildInputs =
+              (with pkgs; [
+                # Build tools
+                buck2
+                reindeer
+                rustToolchain
+                cargo
+
+                # System dependencies
+                pkg-config
+                clang
+                llvm
+                lld
+                linuxHeaders
+
+                # Python
+                python3
+                python3Packages.pytest
+
+                # Dev tools
+                cargo-edit
+                cargo-watch
+                rust-analyzer
+                ripgrep
+                fd
+
+                # Security
+                libseccomp
+                libseccomp.dev
+
+                # Network
+                iperf3
+                netcat
+
+                # VM
+                qemu
+
+                # Build deps
+                protobuf
+                zlib
+                zlib.dev
+                openssl
+                openssl.dev
+              ])
+              ++ [
+                awsLcStatic
+                libseccompStatic
+                zstdStatic
+              ]
+              ++ (cfg.extra-packages pkgs);
+
+            shellHook = ''
+              export RUST_BACKTRACE=1
+              export RUST_LOG=debug
+              export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+              export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+              export LIBSECCOMP_INCLUDE_DIR="${pkgs.libseccomp.dev}/include"
+              export ZSTD_LIB_DIR="${zstdStatic}/lib"
+              export RUST_VENDOR_DIR="${rustVendor}"
+              export LIBRARY_PATH="${libseccompStatic.lib}/lib:${zstdStatic}/lib:$LIBRARY_PATH"
+
+              # Link vendor directory
+              if [ ! -e third-party/rust/vendor ] || [ -L third-party/rust/vendor ]; then
+                rm -f third-party/rust/vendor
+                ln -sf "${rustVendor}" third-party/rust/vendor
+                echo "📦 Linked vendor -> ${rustVendor}"
+              fi
+
+              echo "🚀 Isospin Development Environment"
+              echo "🔧 Buck2: $(buck2 --version 2>/dev/null || echo 'not found')"
+              echo "🦀 Rust: $(rustc --version)"
+              echo "📦 Vendor: ${rustVendor}"
+            '';
+          };
+        };
+    };
+
+  # ══════════════════════════════════════════════════════════════════════════════
+  # SCRIPTS MODULE
+  # nix run .#<script> commands
+  # ══════════════════════════════════════════════════════════════════════════════
+  # :: { lib : a } | ... -> { _class : "flake" }
+  scriptsModule =
+    { lib, ... }:
+    {
+      # :: "flake"
+      _class = "flake";
+
+      config.perSystem =
+        {
+          pkgs,
+          rustVendor,
+          libseccompStatic,
+          awsLcStatic,
+          zstdStatic,
+          ...
+        }:
+        let
+          mkScript =
+            name: text:
+            pkgs.writeShellApplication {
+              inherit name;
+              runtimeInputs = with pkgs; [
+                buck2
+                reindeer
+                cargo
+                git
+                coreutils
+                gnused
+              ];
+              inherit text;
+            };
+
+          setupEnv = ''
+            export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+            export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+            export ZSTD_LIB_DIR="${zstdStatic}/lib"
+
+            # Ensure vendor symlink
+            if [ ! -e third-party/rust/vendor ]; then
+              ln -sf "${rustVendor}" third-party/rust/vendor
+            fi
+          '';
+        in
+        {
+          packages = rec {
+            # ─────────────────────────────────────────────────────────────────
+            # Vendor management
+            # ─────────────────────────────────────────────────────────────────
+            vendor-link = mkScript "vendor-link" ''
+              rm -f third-party/rust/vendor
+              ln -sf "${rustVendor}" third-party/rust/vendor
+              echo "✓ Linked vendor -> ${rustVendor}"
+            '';
+
+            vendor-check = mkScript "vendor-check" ''
+              if [ -L third-party/rust/vendor ]; then
+                target=$(readlink third-party/rust/vendor)
+                echo "vendor -> $target"
+                if [ -d "$target" ]; then
+                  echo "✓ Valid vendor directory"
+                  count=$(find "$target" -maxdepth 1 -mindepth 1 -type d | wc -l)
+                  echo "  $count crates"
+                else
+                  echo "✗ Broken symlink"
+                  exit 1
+                fi
+              else
+                echo "✗ Not a symlink"
+                exit 1
+              fi
+            '';
+
+            # ─────────────────────────────────────────────────────────────────
+            # Buck2 operations
+            # ─────────────────────────────────────────────────────────────────
+            buckify = mkScript "buckify" ''
+              ${setupEnv}
+              echo "→ Regenerating BUCK files..."
+              reindeer --third-party-dir third-party/rust buckify
+              echo "✓ BUCK files regenerated"
+            '';
+
+            build-fc = mkScript "build-fc" ''
+              ${setupEnv}
+              echo "→ Building Firecracker..."
+              buck2 build \
+                //firecracker/src/firecracker:firecracker \
+                //firecracker/src/jailer:jailer \
+                //firecracker/src/seccompiler:seccompiler-bin \
+                //firecracker/src/rebase-snap:rebase-snap \
+                //firecracker/src/snapshot-editor:snapshot-editor
+              echo "✓ Firecracker built"
+            '';
+
+            build-ch = mkScript "build-ch" ''
+              ${setupEnv}
+              echo "→ Building Cloud Hypervisor..."
+              buck2 build //cloud-hypervisor/vmm:vmm || echo "Cloud Hypervisor build not yet complete"
+            '';
+
+            test-fc = mkScript "test-fc" ''
+              ${setupEnv}
+              echo "→ Running Firecracker tests..."
+              buck2 test '//firecracker/...'
+            '';
+
+            # ─────────────────────────────────────────────────────────────────
+            # Cargo lockfile management
+            # ─────────────────────────────────────────────────────────────────
+            lockfile-update = mkScript "lockfile-update" ''
+              echo "→ Updating Cargo.lock..."
+              cargo generate-lockfile --manifest-path third-party/rust/Cargo.toml
+              echo "✓ Cargo.lock updated"
+              echo ""
+              echo "Next steps:"
+              echo "  1. nix build .#rustVendor -o result-vendor"
+              echo "  2. nix run .#vendor-link"
+              echo "  3. nix run .#buckify"
+            '';
+
+            # ─────────────────────────────────────────────────────────────────
+            # Full rebuild workflow
+            # ─────────────────────────────────────────────────────────────────
+            rebuild = mkScript "rebuild" ''
+              ${setupEnv}
+              echo "═══════════════════════════════════════════════════════════"
+              echo "  Isospin Full Rebuild"
+              echo "═══════════════════════════════════════════════════════════"
+              echo ""
+              echo "→ Step 1: Regenerating BUCK files..."
+              reindeer --third-party-dir third-party/rust buckify
+              echo ""
+              echo "→ Step 2: Building Firecracker..."
+              buck2 build //firecracker/src/firecracker:firecracker
+              echo ""
+              echo "✓ Rebuild complete"
+            '';
+
+            # ─────────────────────────────────────────────────────────────────
+            # Clean operations
+            # ─────────────────────────────────────────────────────────────────
+            clean = mkScript "clean" ''
+              echo "→ Cleaning Buck2 build artifacts..."
+              buck2 clean
+              echo "✓ Clean complete"
+            '';
+
+            # ─────────────────────────────────────────────────────────────────
+            # VM assets and boot
+            # ─────────────────────────────────────────────────────────────────
+            fetch-vm-assets = pkgs.writeShellApplication {
+              name = "fetch-vm-assets";
+              runtimeInputs = with pkgs; [
+                curl
+                coreutils
+                jq
+                gnugrep
+                gnused
+                squashfsTools
+                e2fsprogs
+                openssh
+              ];
+              text = ''
+                                set -euo pipefail
+                                ASSETS_DIR=".vm-assets"
+                                mkdir -p "$ASSETS_DIR"
+
+                                echo "═══════════════════════════════════════════════════════════"
+                                echo "  Fetching Firecracker VM Assets"
+                                echo "═══════════════════════════════════════════════════════════"
+
+                                ARCH="$(uname -m)"
+
+                                # Get latest Firecracker version for CI artifacts
+                                RELEASE_URL="https://github.com/firecracker-microvm/firecracker/releases"
+                                echo "→ Checking latest Firecracker release..."
+                                LATEST_VERSION=$(basename "$(curl -fsSLI -o /dev/null -w '%{url_effective}' "$RELEASE_URL/latest")")
+                                CI_VERSION="''${LATEST_VERSION%.*}"
+                                echo "  Using CI version: $CI_VERSION"
+
+                                # Download kernel
+                                if [ ! -f "$ASSETS_DIR/vmlinux.bin" ]; then
+                                  echo "→ Finding latest kernel..."
+                                  LATEST_KERNEL_KEY=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/vmlinux-&list-type=2" \
+                                      | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/vmlinux-[0-9]+\.[0-9]+\.[0-9]{1,3})(?=</Key>)" \
+                                      | sort -V | tail -1)
+                                  if [ -z "$LATEST_KERNEL_KEY" ]; then
+                                    echo "ERROR: Could not find kernel in CI artifacts"
+                                    exit 1
+                                  fi
+                                  echo "→ Downloading kernel: $LATEST_KERNEL_KEY"
+                                  curl -fsSL -o "$ASSETS_DIR/vmlinux.bin" \
+                                    "https://s3.amazonaws.com/spec.ccfc.min/$LATEST_KERNEL_KEY"
+                                else
+                                  echo "✓ Kernel exists"
+                                fi
+
+                                # Download and convert rootfs
+                                if [ ! -f "$ASSETS_DIR/ubuntu.ext4" ]; then
+                                  echo "→ Finding latest Ubuntu rootfs..."
+                                  LATEST_UBUNTU_KEY=$(curl -s "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/$CI_VERSION/$ARCH/ubuntu-&list-type=2" \
+                                      | grep -oP "(?<=<Key>)(firecracker-ci/$CI_VERSION/$ARCH/ubuntu-[0-9]+\.[0-9]+\.squashfs)(?=</Key>)" \
+                                      | sort -V | tail -1)
+                                  if [ -z "$LATEST_UBUNTU_KEY" ]; then
+                                    echo "ERROR: Could not find Ubuntu rootfs in CI artifacts"
+                                    exit 1
+                                  fi
+                                  UBUNTU_VERSION=$(basename "$LATEST_UBUNTU_KEY" .squashfs | grep -oE '[0-9]+\.[0-9]+')
+                                  echo "→ Downloading Ubuntu $UBUNTU_VERSION rootfs (squashfs)..."
+                                  curl -fsSL -o "$ASSETS_DIR/ubuntu.squashfs" \
+                                    "https://s3.amazonaws.com/spec.ccfc.min/$LATEST_UBUNTU_KEY"
+
+                                  echo "→ Converting squashfs to ext4 (requires sudo)..."
+                                  SQUASHFS_DIR="$ASSETS_DIR/squashfs-root"
+
+                                  # Cleanup function for trap
+                                  cleanup() {
+                                    echo "→ Cleaning up temporary files..."
+                                    sudo rm -rf "$SQUASHFS_DIR" 2>/dev/null || true
+                                    rm -f "$ASSETS_DIR/ubuntu.squashfs" 2>/dev/null || true
+                                  }
+                                  trap cleanup EXIT
+
+                                  rm -rf "$SQUASHFS_DIR"
+                                  unsquashfs -d "$SQUASHFS_DIR" "$ASSETS_DIR/ubuntu.squashfs"
+
+                                  # Generate SSH key for the VM
+                                  if [ ! -f "$ASSETS_DIR/vm_key" ]; then
+                                    echo "→ Generating SSH key..."
+                                    ssh-keygen -t ed25519 -f "$ASSETS_DIR/vm_key" -N "" -q
+                                  fi
+                                  mkdir -p "$SQUASHFS_DIR/root/.ssh"
+                                  cp "$ASSETS_DIR/vm_key.pub" "$SQUASHFS_DIR/root/.ssh/authorized_keys"
+
+                                  # Create ext4 image
+                                  echo "→ Creating ext4 filesystem (1GB)..."
+                                  truncate -s 1G "$ASSETS_DIR/ubuntu.ext4"
+                                  sudo chown -R root:root "$SQUASHFS_DIR"
+                                  sudo mkfs.ext4 -d "$SQUASHFS_DIR" -F "$ASSETS_DIR/ubuntu.ext4"
+                                  sudo chown "$USER" "$ASSETS_DIR/ubuntu.ext4"
+
+                                  # Cleanup handled by trap
+                                  echo "✓ Rootfs created: ubuntu.ext4"
+                                else
+                                  echo "✓ Rootfs exists"
+                                fi
+
+                                # Generate VM config
+                                cat > "$ASSETS_DIR/vm-config.json" << 'EOF'
+                {
+                  "boot-source": {
+                    "kernel_image_path": ".vm-assets/vmlinux.bin",
+                    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
+                  },
+                  "drives": [{
+                    "drive_id": "rootfs",
+                    "path_on_host": ".vm-assets/ubuntu.ext4",
+                    "is_root_device": true,
+                    "is_read_only": false
+                  }],
+                  "machine-config": {
+                    "vcpu_count": 2,
+                    "mem_size_mib": 1024
+                  }
+                }
+                EOF
+
+                                echo ""
+                                echo "✓ Assets ready:"
+                                ls -lh "$ASSETS_DIR"
+                                echo ""
+                                echo "To boot Ubuntu (from nix develop shell):"
+                                echo "  nix run .#boot-vm"
+                                echo ""
+                                echo "SSH key saved to: .vm-assets/vm_key"
+              '';
+            };
+
+            # ─────────────────────────────────────────────────────────────────
+            # Networking
+            # ─────────────────────────────────────────────────────────────────
+            # Multi-VM networking scheme:
+            #   VM 0: tap0, 172.16.0.1/30 (host) -> 172.16.0.2 (guest), MAC 06:00:AC:10:00:02
+            #   VM 1: tap1, 172.16.0.5/30 (host) -> 172.16.0.6 (guest), MAC 06:00:AC:10:00:06
+            #   VM 2: tap2, 172.16.0.9/30 (host) -> 172.16.0.10 (guest), MAC 06:00:AC:10:00:0A
+            #   VM N: tapN, 172.16.0.(4N+1)/30 -> 172.16.0.(4N+2), MAC 06:00:AC:10:00:XX
+
+            setup-network = pkgs.writeShellApplication {
+              name = "setup-network";
+              runtimeInputs = with pkgs; [
+                iproute2
+                iptables
+                gnugrep
+                jq
+              ];
+              text = ''
+                set -euo pipefail
+
+                # VM index (0, 1, 2, ...)
+                VM_INDEX="''${1:-0}"
+                TAP_DEV="tap$VM_INDEX"
+
+                # Calculate IPs: VM N gets 172.16.0.(4N+1) for host, 172.16.0.(4N+2) for guest
+                HOST_LAST_OCTET=$((4 * VM_INDEX + 1))
+                GUEST_LAST_OCTET=$((4 * VM_INDEX + 2))
+                TAP_IP="172.16.0.$HOST_LAST_OCTET"
+                GUEST_IP="172.16.0.$GUEST_LAST_OCTET"
+
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Setting up Firecracker networking (VM $VM_INDEX)"
+                echo "═══════════════════════════════════════════════════════════"
+
+                # Create TAP device
+                echo "→ Creating TAP device: $TAP_DEV"
+                sudo ip link del "$TAP_DEV" 2>/dev/null || true
+                sudo ip tuntap add dev "$TAP_DEV" mode tap
+                sudo ip addr add "$TAP_IP/30" dev "$TAP_DEV"
+                sudo ip link set dev "$TAP_DEV" up
+
+                # Enable IP forwarding (only needed once)
+                echo "→ Enabling IP forwarding..."
+                sudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"
+
+                # Find default interface
+                HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev')
+                echo "→ Host interface: $HOST_IFACE"
+
+                # Setup NAT (idempotent - check if rule exists)
+                echo "→ Setting up NAT..."
+                if ! sudo iptables -t nat -C POSTROUTING -o "$HOST_IFACE" -j MASQUERADE 2>/dev/null; then
+                  sudo iptables -t nat -A POSTROUTING -o "$HOST_IFACE" -j MASQUERADE
+                fi
+                sudo iptables -P FORWARD ACCEPT
+
+                # Calculate MAC address (06:00:AC:10:00:XX where XX is guest last octet in hex)
+                GUEST_MAC=$(printf "06:00:AC:10:00:%02X" "$GUEST_LAST_OCTET")
+
+                echo ""
+                echo "✓ Network ready for VM $VM_INDEX!"
+                echo "  TAP device: $TAP_DEV ($TAP_IP/30)"
+                echo "  Guest IP:   $GUEST_IP"
+                echo "  Guest MAC:  $GUEST_MAC"
+                echo ""
+                echo "To boot VM $VM_INDEX with networking:"
+                echo "  nix run .#boot-vm-net -- $VM_INDEX"
+              '';
+            };
+
+            teardown-network = pkgs.writeShellApplication {
+              name = "teardown-network";
+              runtimeInputs = with pkgs; [
+                iproute2
+                iptables
+                jq
+              ];
+              text = ''
+                set -euo pipefail
+
+                VM_INDEX="''${1:-0}"
+                TAP_DEV="tap$VM_INDEX"
+
+                echo "→ Removing TAP device: $TAP_DEV"
+                sudo ip link del "$TAP_DEV" 2>/dev/null || true
+
+                # Only remove NAT if no TAP devices remain
+                REMAINING_TAPS=$(ip link show 2>/dev/null | grep -c "tap[0-9]" || echo 0)
+                if [ "$REMAINING_TAPS" -eq 0 ]; then
+                  echo "→ Removing NAT rules (no TAP devices remaining)..."
+                  HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev') || true
+                  if [ -n "$HOST_IFACE" ]; then
+                    sudo iptables -t nat -D POSTROUTING -o "$HOST_IFACE" -j MASQUERADE 2>/dev/null || true
+                  fi
+                fi
+
+                echo "✓ Network for VM $VM_INDEX torn down"
+              '';
+            };
+
+            teardown-all-networks = pkgs.writeShellApplication {
+              name = "teardown-all-networks";
+              runtimeInputs = with pkgs; [
+                iproute2
+                iptables
+                jq
+                gnugrep
+              ];
+              text = ''
+                set -euo pipefail
+
+                echo "→ Removing all TAP devices..."
+                for tap in $(ip link show 2>/dev/null | grep -oP 'tap[0-9]+' | sort -u); do
+                  echo "  Removing $tap"
+                  sudo ip link del "$tap" 2>/dev/null || true
+                done
+
+                echo "→ Removing NAT rules..."
+                HOST_IFACE=$(ip -j route list default | jq -r '.[0].dev') || true
+                if [ -n "$HOST_IFACE" ]; then
+                  sudo iptables -t nat -D POSTROUTING -o "$HOST_IFACE" -j MASQUERADE 2>/dev/null || true
+                fi
+
+                echo "✓ All networks torn down"
+              '';
+            };
+
+            # Boot VM script - builds binary then runs with sudo
+            boot-vm = pkgs.writeShellApplication {
+              name = "boot-vm";
+              runtimeInputs = with pkgs; [
+                buck2
+                reindeer
+              ];
+              text = ''
+                set -euo pipefail
+
+                # Setup environment
+                export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+                export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+                export ZSTD_LIB_DIR="${zstdStatic}/lib"
+                export LIBSECCOMP_STATIC=1
+
+                if [ ! -e third-party/rust/vendor ]; then
+                  ln -sf "${rustVendor}" third-party/rust/vendor
+                fi
+
+                CONFIG_FILE="''${1:-.vm-assets/vm-config.json}"
+
+                if [ ! -f "$CONFIG_FILE" ]; then
+                  echo "ERROR: Config file not found: $CONFIG_FILE"
+                  echo "Run 'nix run .#fetch-vm-assets' first"
+                  exit 1
+                fi
+
+                echo "→ Building Firecracker..."
+                buck2 build //firecracker/src/firecracker:firecracker
+
+                BINARY="buck-out/v2/gen/root/b42aeba648b8c415/firecracker/src/firecracker/__firecracker__/firecracker"
+
+                if [ ! -f "$BINARY" ]; then
+                  # Try to find it
+                  BINARY=$(find buck-out -name firecracker -type f -executable 2>/dev/null | grep -v '\.rlib' | head -1)
+                fi
+
+                if [ ! -f "$BINARY" ]; then
+                  echo "ERROR: Could not find firecracker binary"
+                  exit 1
+                fi
+
+                echo "→ Starting VM (requires sudo for /dev/kvm access)..."
+                echo "  Config: $CONFIG_FILE"
+                echo "  Binary: $BINARY"
+                echo ""
+                echo "  Type 'reboot' in guest to exit"
+                echo ""
+
+                sudo "$BINARY" --no-api --config-file "$CONFIG_FILE"
+              '';
+            };
+
+            # Boot Cloud Hypervisor VM with networking
+            boot-ch = pkgs.writeShellApplication {
+              name = "boot-ch";
+              runtimeInputs = with pkgs; [
+                buck2
+                iproute2
+              ];
+              text = ''
+                set -euo pipefail
+
+                # Setup environment
+                export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+                export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+                export ZSTD_LIB_DIR="${zstdStatic}/lib"
+
+                if [ ! -e third-party/rust/vendor ]; then
+                  ln -sf "${rustVendor}" third-party/rust/vendor
+                fi
+
+                ASSETS_DIR=".vm-assets"
+                if [ ! -f "$ASSETS_DIR/vmlinux.bin" ] || [ ! -f "$ASSETS_DIR/ubuntu.ext4" ]; then
+                  echo "ERROR: VM assets not found. Run 'nix run .#fetch-vm-assets' first"
+                  exit 1
+                fi
+
+                echo "→ Building Cloud Hypervisor..."
+                buck2 build //cloud-hypervisor/cloud-hypervisor:cloud-hypervisor
+
+                BINARY="buck-out/v2/gen/root/b42aeba648b8c415/cloud-hypervisor/cloud-hypervisor/__cloud-hypervisor__/cloud_hypervisor_bin"
+
+                # Setup tap device
+                sudo ip link show tap0 &>/dev/null || sudo ip tuntap add tap0 mode tap
+                sudo ip addr add 172.16.0.1/30 dev tap0 2>/dev/null || true
+                sudo ip link set tap0 up
+
+                echo "→ Starting Cloud Hypervisor VM..."
+                echo "  SSH: ssh -i .vm-assets/vm_key root@172.16.0.2"
+                echo "  Type 'reboot' in guest or Ctrl+C to exit"
+                echo ""
+
+                sudo "$BINARY" \
+                  --kernel "$ASSETS_DIR/vmlinux.bin" \
+                  --cmdline "console=ttyS0 root=/dev/vda rw" \
+                  --disk path="$ASSETS_DIR/ubuntu.ext4" \
+                  --cpus boot=2 \
+                  --memory size=1024M \
+                  --net tap=tap0,mac=06:00:AC:10:00:02 \
+                  --serial tty \
+                  --console off
+              '';
+            };
+
+            # Boot VM with networking
+            boot-vm-net = pkgs.writeShellApplication {
+              name = "boot-vm-net";
+              runtimeInputs = with pkgs; [
+                buck2
+                reindeer
+                iproute2
+                openssh
+                jq
+                coreutils
+              ];
+              text = ''
+                                set -euo pipefail
+
+                                # Setup environment
+                                export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+                                export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+                                export ZSTD_LIB_DIR="${zstdStatic}/lib"
+                                export LIBSECCOMP_STATIC=1
+
+                                if [ ! -e third-party/rust/vendor ]; then
+                                  ln -sf "${rustVendor}" third-party/rust/vendor
+                                fi
+
+                                # VM index (0, 1, 2, ...)
+                                VM_INDEX="''${1:-0}"
+                                TAP_DEV="tap$VM_INDEX"
+                                
+                                # Calculate network parameters
+                                GUEST_LAST_OCTET=$((4 * VM_INDEX + 2))
+                                GUEST_IP="172.16.0.$GUEST_LAST_OCTET"
+                                GUEST_MAC=$(printf "06:00:AC:10:00:%02X" "$GUEST_LAST_OCTET")
+
+                                ASSETS_DIR=".vm-assets"
+                                CONFIG_FILE="$ASSETS_DIR/vm-config-net-$VM_INDEX.json"
+
+                                if [ ! -f "$ASSETS_DIR/vmlinux.bin" ] || [ ! -f "$ASSETS_DIR/ubuntu.ext4" ]; then
+                                  echo "ERROR: VM assets not found"
+                                  echo "Run 'nix run .#fetch-vm-assets' first"
+                                  exit 1
+                                fi
+
+                                # Check if TAP device exists
+                                if ! ip link show "$TAP_DEV" &>/dev/null; then
+                                  echo "ERROR: TAP device $TAP_DEV not found"
+                                  echo "Run 'nix run .#setup-network -- $VM_INDEX' first"
+                                  exit 1
+                                fi
+
+                                # Generate network config for this VM
+                                cat > "$CONFIG_FILE" << EOFCONFIG
+                {
+                  "boot-source": {
+                    "kernel_image_path": "$ASSETS_DIR/vmlinux.bin",
+                    "boot_args": "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw"
+                  },
+                  "drives": [{
+                    "drive_id": "rootfs",
+                    "path_on_host": "$ASSETS_DIR/ubuntu.ext4",
+                    "is_root_device": true,
+                    "is_read_only": false
+                  }],
+                  "network-interfaces": [{
+                    "iface_id": "eth0",
+                    "guest_mac": "$GUEST_MAC",
+                    "host_dev_name": "$TAP_DEV"
+                  }],
+                  "machine-config": {
+                    "vcpu_count": 2,
+                    "mem_size_mib": 1024
+                  }
+                }
+                EOFCONFIG
+
+                                echo "→ Building Firecracker..."
+                                buck2 build //firecracker/src/firecracker:firecracker
+
+                                BINARY="buck-out/v2/gen/root/b42aeba648b8c415/firecracker/src/firecracker/__firecracker__/firecracker"
+
+                                if [ ! -f "$BINARY" ]; then
+                                  BINARY=$(find buck-out -name firecracker -type f -executable 2>/dev/null | grep -v '\.rlib' | head -1)
+                                fi
+
+                                if [ ! -f "$BINARY" ]; then
+                                  echo "ERROR: Could not find firecracker binary"
+                                  exit 1
+                                fi
+
+                                echo "→ Starting VM $VM_INDEX with networking..."
+                                echo "  Config: $CONFIG_FILE"
+                                echo "  Binary: $BINARY"
+                                echo ""
+                                echo "  Guest IP:  $GUEST_IP"
+                                echo "  Guest MAC: $GUEST_MAC"
+                                echo "  SSH: ssh -i .vm-assets/vm_key root@$GUEST_IP"
+                                echo ""
+                                echo "  Type 'reboot' in guest to exit"
+                                echo ""
+
+                                sudo "$BINARY" --no-api --config-file "$CONFIG_FILE"
+              '';
+            };
+
+            # Boot VM with GPU passthrough (VFIO) - legacy script
+            boot-vm-gpu = pkgs.writeShellApplication {
+              name = "boot-vm-gpu";
+              runtimeInputs = with pkgs; [
+                buck2
+                reindeer
+                coreutils
+                jq
+              ];
+              text = ''
+                set -euo pipefail
+
+                # Setup environment
+                export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+                export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+                export ZSTD_LIB_DIR="${zstdStatic}/lib"
+                export LIBSECCOMP_STATIC=1
+
+                if [ ! -e third-party/rust/vendor ]; then
+                  ln -sf "${rustVendor}" third-party/rust/vendor
+                fi
+
+                ASSETS_DIR=".vm-assets"
+                CONFIG_FILE="$ASSETS_DIR/vm-config-gpu.json"
+
+                # Allow override via argument
+                if [ -n "''${1:-}" ] && [ -f "$1" ]; then
+                  CONFIG_FILE="$1"
+                fi
+
+                if [ ! -f "$ASSETS_DIR/vmlinux.bin" ]; then
+                  echo "ERROR: Kernel not found. Run 'nix run .#fetch-vm-assets' first"
+                  exit 1
+                fi
+
+                if [ ! -f "$CONFIG_FILE" ]; then
+                  echo "ERROR: Config file not found: $CONFIG_FILE"
+                  echo ""
+                  echo "Create a config file like:"
+                  echo '{'
+                  echo '  "boot-source": {'
+                  echo '    "kernel_image_path": ".vm-assets/vmlinux.bin",'
+                  echo '    "boot_args": "console=ttyS0 reboot=k panic=1 pci=realloc root=/dev/vda rw"'
+                  echo '  },'
+                  echo '  "drives": [{'
+                  echo '    "drive_id": "rootfs",'
+                  echo '    "path_on_host": ".vm-assets/ubuntu-gpu.raw",'
+                  echo '    "is_root_device": true,'
+                  echo '    "is_read_only": false'
+                  echo '  }],'
+                  echo '  "machine-config": {'
+                  echo '    "vcpu_count": 4,'
+                  echo '    "mem_size_mib": 16384'
+                  echo '  },'
+                  echo '  "vfio": [{'
+                  echo '    "id": "gpu0",'
+                  echo '    "pci_address": "0000:01:00.0"'
+                  echo '  }]'
+                  echo '}'
+                  exit 1
+                fi
+
+                echo "→ Building Firecracker..."
+                buck2 build //firecracker/src/firecracker:firecracker
+
+                BINARY="buck-out/v2/gen/root/b42aeba648b8c415/firecracker/src/firecracker/__firecracker__/firecracker"
+
+                if [ ! -f "$BINARY" ]; then
+                  BINARY=$(find buck-out -name firecracker -type f -executable 2>/dev/null | grep -v '\.rlib' | head -1)
+                fi
+
+                if [ ! -f "$BINARY" ]; then
+                  echo "ERROR: Could not find firecracker binary"
+                  exit 1
+                fi
+
+                # Extract GPU PCI address from config
+                GPU_PCI=$(jq -r '.vfio[0].pci_address // empty' "$CONFIG_FILE" 2>/dev/null || echo "")
+
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Firecracker GPU Passthrough VM"
+                echo "═══════════════════════════════════════════════════════════"
+                echo ""
+                echo "  Config: $CONFIG_FILE"
+                echo "  Binary: $BINARY"
+                if [ -n "$GPU_PCI" ]; then
+                  echo "  GPU:    $GPU_PCI"
+                fi
+                echo ""
+                echo "  NOTE: GPU must be bound to vfio-pci driver"
+                echo "  NOTE: Running with --no-seccomp (required for VFIO ioctls)"
+                echo ""
+                echo "  Type 'reboot' in guest to exit"
+                echo ""
+
+                # Generate unique socket path
+                SOCK_PATH="/tmp/fc-gpu-$$.sock"
+                rm -f "$SOCK_PATH"
+
+                sudo "$BINARY" \
+                  --no-seccomp \
+                  --config-file "$CONFIG_FILE" \
+                  --api-sock "$SOCK_PATH"
+              '';
+            };
+
+            # ─────────────────────────────────────────────────────────────────
+            # FC-GPU: Complete GPU passthrough VM launcher
+            # This is the main entry point for GPU passthrough testing
+            # Usage: nix run .#fc-gpu [-- --pci 0000:01:00.0 --mem 32768 --cpus 8]
+            # ─────────────────────────────────────────────────────────────────
+            fc-gpu = pkgs.writeShellApplication {
+              name = "fc-gpu";
+              runtimeInputs = with pkgs; [
+                buck2
+                coreutils
+                jq
+                xz
+                e2fsprogs
+                findutils
+                gnugrep
+                pciutils
+              ];
+              text = ''
+                set -euo pipefail
+
+                # ═══════════════════════════════════════════════════════════════
+                # Configuration (override via environment or CLI)
+                # ═══════════════════════════════════════════════════════════════
+                GPU_PCI="''${FC_GPU_PCI:-0000:01:00.0}"
+                MEM_MIB="''${FC_GPU_MEM:-32768}"
+                VCPUS="''${FC_GPU_CPUS:-8}"
+                ASSETS_DIR=".vm-assets"
+
+                # Parse CLI args
+                while [[ $# -gt 0 ]]; do
+                  case $1 in
+                    --pci) GPU_PCI="$2"; shift 2 ;;
+                    --mem) MEM_MIB="$2"; shift 2 ;;
+                    --cpus) VCPUS="$2"; shift 2 ;;
+                    --help|-h)
+                      echo "Usage: nix run .#fc-gpu [-- OPTIONS]"
+                      echo ""
+                      echo "Options:"
+                      echo "  --pci ADDR    GPU PCI address (default: 0000:01:00.0)"
+                      echo "  --mem MIB     Memory in MiB (default: 32768)"
+                      echo "  --cpus N      Number of vCPUs (default: 8)"
+                      echo ""
+                      echo "Environment variables:"
+                      echo "  FC_GPU_PCI    GPU PCI address"
+                      echo "  FC_GPU_MEM    Memory in MiB"
+                      echo "  FC_GPU_CPUS   Number of vCPUs"
+                      exit 0
+                      ;;
+                    *) echo "Unknown option: $1"; exit 1 ;;
+                  esac
+                done
+
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Firecracker GPU Passthrough VM"
+                echo "═══════════════════════════════════════════════════════════"
+                echo ""
+
+                # ═══════════════════════════════════════════════════════════════
+                # Step 1: Verify GPU is bound to vfio-pci
+                # ═══════════════════════════════════════════════════════════════
+                echo "→ Checking GPU $GPU_PCI..."
+                GPU_PATH="/sys/bus/pci/devices/$GPU_PCI"
+
+                if [[ ! -d "$GPU_PATH" ]]; then
+                  echo "ERROR: GPU $GPU_PCI not found"
+                  echo ""
+                  echo "Available NVIDIA GPUs:"
+                  lspci -nn | grep -i nvidia || echo "  None found"
+                  exit 1
+                fi
+
+                if [[ -L "$GPU_PATH/driver" ]]; then
+                  DRIVER=$(basename "$(readlink "$GPU_PATH/driver")")
+                  if [[ "$DRIVER" != "vfio-pci" ]]; then
+                    echo "ERROR: GPU is bound to '$DRIVER', not 'vfio-pci'"
+                    echo ""
+                    echo "To bind to vfio-pci, add to NixOS config:"
+                    echo "  boot.kernelParams = [ \"vfio-pci.ids=XXXX:XXXX\" ];"
+                    echo "Or use: echo $GPU_PCI | sudo tee /sys/bus/pci/drivers/vfio-pci/bind"
+                    exit 1
+                  fi
+                else
+                  echo "ERROR: GPU has no driver bound"
+                  exit 1
+                fi
+
+                # Get GPU info
+                GPU_INFO=$(lspci -s "$GPU_PCI" -nn 2>/dev/null || echo "Unknown GPU")
+                echo "  GPU: $GPU_INFO"
+                echo "  Driver: vfio-pci"
+                echo ""
+
+                # ═══════════════════════════════════════════════════════════════
+                # Step 2: Setup build environment  
+                # ═══════════════════════════════════════════════════════════════
+                export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+                export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+                export ZSTD_LIB_DIR="${zstdStatic}/lib"
+                export LIBSECCOMP_STATIC=1
+
+                if [ ! -e third-party/rust/vendor ]; then
+                  ln -sf "${rustVendor}" third-party/rust/vendor
+                fi
+
+                # ═══════════════════════════════════════════════════════════════
+                # Step 3: Check/create VM assets
+                # ═══════════════════════════════════════════════════════════════
+                mkdir -p "$ASSETS_DIR"
+
+                # Get host kernel version
+                KERNEL_VERSION=$(uname -r)
+                KERNEL_BIN="$ASSETS_DIR/vmlinux-$KERNEL_VERSION.bin"
+                INITRAMFS="$ASSETS_DIR/initramfs.cpio.gz"
+                ROOTFS="$ASSETS_DIR/gpu-rootfs.ext4"
+
+                # Check for kernel
+                if [[ ! -f "$KERNEL_BIN" ]]; then
+                  echo "→ Kernel not found: $KERNEL_BIN"
+                  echo "  You need to extract vmlinux from your host kernel."
+                  echo ""
+                  echo "  For NixOS:"
+                  echo "    bzImage=/nix/store/.../bzImage"
+                  echo "    extract-vmlinux \$bzImage > $KERNEL_BIN"
+                  echo ""
+                  echo "  Or use the CI kernel (may not match NVIDIA modules):"
+                  echo "    nix run .#fetch-vm-assets"
+                  exit 1
+                fi
+                echo "→ Kernel: $KERNEL_BIN"
+
+                # Check for initramfs
+                if [[ ! -f "$INITRAMFS" ]]; then
+                  echo "→ Initramfs not found: $INITRAMFS"
+                  echo "  Run: .vm-assets/create-initramfs.sh"
+                  exit 1
+                fi
+                echo "→ Initramfs: $INITRAMFS"
+
+                # Check for rootfs
+                if [[ ! -f "$ROOTFS" ]]; then
+                  echo "→ Rootfs not found: $ROOTFS"
+                  echo "  Run: .vm-assets/create-gpu-rootfs.sh"
+                  exit 1
+                fi
+                echo "→ Rootfs: $ROOTFS"
+                echo ""
+
+                # ═══════════════════════════════════════════════════════════════
+                # Step 4: Build Firecracker
+                # ═══════════════════════════════════════════════════════════════
+                echo "→ Building Firecracker..."
+                buck2 build //firecracker/src/firecracker:firecracker 2>&1 | tail -5
+
+                BINARY=$(find buck-out -name firecracker -type f -executable 2>/dev/null | grep -v '\.rlib' | head -1 || true)
+
+                if [[ -z "$BINARY" || ! -f "$BINARY" ]]; then
+                  echo "ERROR: Could not find firecracker binary"
+                  exit 1
+                fi
+                echo "→ Binary: $BINARY"
+                echo ""
+
+                # ═══════════════════════════════════════════════════════════════
+                # Step 5: Generate VM config
+                # ═══════════════════════════════════════════════════════════════
+                CONFIG_FILE="$ASSETS_DIR/vm-config-gpu-$$.json"
+
+                cat > "$CONFIG_FILE" << EOFCONFIG
+                {
+                  "boot-source": {
+                    "kernel_image_path": "$KERNEL_BIN",
+                    "initrd_path": "$INITRAMFS",
+                    "boot_args": "console=ttyS0 reboot=k panic=1 pci=realloc"
+                  },
+                  "drives": [{
+                    "drive_id": "rootfs",
+                    "path_on_host": "$ROOTFS",
+                    "is_root_device": true,
+                    "is_read_only": false
+                  }],
+                  "machine-config": {
+                    "vcpu_count": $VCPUS,
+                    "mem_size_mib": $MEM_MIB
+                  },
+                  "vfio": [{
+                    "id": "gpu0",
+                    "pci_address": "$GPU_PCI"
+                  }]
+                }
+                EOFCONFIG
+
+                # Cleanup config on exit
+                # shellcheck disable=SC2064
+                trap "rm -f $CONFIG_FILE" EXIT
+
+                # ═══════════════════════════════════════════════════════════════
+                # Step 6: Launch VM
+                # ═══════════════════════════════════════════════════════════════
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Launching VM"
+                echo "═══════════════════════════════════════════════════════════"
+                echo ""
+                echo "  GPU:    $GPU_PCI"
+                echo "  Memory: $MEM_MIB MiB"
+                echo "  vCPUs:  $VCPUS"
+                echo ""
+                echo "  NOTE: Running with --no-seccomp (required for VFIO ioctls)"
+                echo "  Type 'reboot' in guest to exit"
+                echo ""
+
+                SOCK_PATH="/tmp/fc-gpu-$$.sock"
+                rm -f "$SOCK_PATH"
+
+                sudo "$BINARY" \
+                  --no-seccomp \
+                  --config-file "$CONFIG_FILE" \
+                  --api-sock "$SOCK_PATH"
+              '';
+            };
+
+            # Helper to create GPU VM assets
+            create-gpu-assets = pkgs.writeShellApplication {
+              name = "create-gpu-assets";
+              runtimeInputs = with pkgs; [
+                coreutils
+                xz
+                e2fsprogs
+                findutils
+                cpio
+                gzip
+                gnutar
+              ];
+              text = ''
+                set -euo pipefail
+
+                ASSETS_DIR=".vm-assets"
+                KERNEL_VERSION=$(uname -r)
+
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Creating GPU VM Assets"
+                echo "═══════════════════════════════════════════════════════════"
+                echo ""
+                echo "Host kernel: $KERNEL_VERSION"
+                echo ""
+
+                mkdir -p "$ASSETS_DIR"
+
+                # ─────────────────────────────────────────────────────────────
+                # Step 1: Extract vmlinux from host kernel
+                # ─────────────────────────────────────────────────────────────
+                KERNEL_BIN="$ASSETS_DIR/vmlinux-$KERNEL_VERSION.bin"
+
+                if [[ ! -f "$KERNEL_BIN" ]]; then
+                  echo "→ Extracting vmlinux..."
+                  
+                  # Find bzImage from running kernel
+                  BZIMAGE=""
+                  for path in \
+                    "/run/current-system/kernel" \
+                    "/nix/store/"*"-linux-$KERNEL_VERSION/bzImage" \
+                    "/boot/vmlinuz-$KERNEL_VERSION"
+                  do
+                    if [[ -f "$path" ]]; then
+                      BZIMAGE="$path"
+                      break
+                    fi
+                  done
+
+                  if [[ -z "$BZIMAGE" ]]; then
+                    echo "ERROR: Could not find bzImage for kernel $KERNEL_VERSION"
+                    echo "Please extract manually:"
+                    echo "  extract-vmlinux /path/to/bzImage > $KERNEL_BIN"
+                    exit 1
+                  fi
+
+                  echo "  bzImage: $BZIMAGE"
+                  
+                  # Use extract-vmlinux script (simplified version)
+                  # Look for gzip magic and decompress
+                  SKIP=$(od -A d -t x1 "$BZIMAGE" | grep -m1 '1f 8b 08' | cut -d' ' -f1)
+                  if [[ -n "$SKIP" ]]; then
+                    dd if="$BZIMAGE" bs=1 skip="$SKIP" 2>/dev/null | gunzip > "$KERNEL_BIN" || {
+                      echo "ERROR: Failed to extract vmlinux"
+                      echo "Install extract-vmlinux and run manually"
+                      exit 1
+                    }
+                  else
+                    echo "ERROR: Could not find gzip header in bzImage"
+                    exit 1
+                  fi
+                fi
+                echo "  Kernel: $KERNEL_BIN ($(stat -c%s "$KERNEL_BIN" | numfmt --to=iec))"
+
+                # ─────────────────────────────────────────────────────────────
+                # Step 2: Create initramfs (if script exists)
+                # ─────────────────────────────────────────────────────────────
+                INITRAMFS="$ASSETS_DIR/initramfs.cpio.gz"
+
+                if [[ ! -f "$INITRAMFS" ]]; then
+                  if [[ -x "$ASSETS_DIR/create-initramfs.sh" ]]; then
+                    echo "→ Creating initramfs..."
+                    "$ASSETS_DIR/create-initramfs.sh"
+                  else
+                    echo "→ Initramfs not found and no creation script"
+                    echo "  Please create: $ASSETS_DIR/create-initramfs.sh"
+                  fi
+                fi
+
+                if [[ -f "$INITRAMFS" ]]; then
+                  echo "  Initramfs: $INITRAMFS ($(stat -c%s "$INITRAMFS" | numfmt --to=iec))"
+                fi
+
+                # ─────────────────────────────────────────────────────────────
+                # Step 3: Create rootfs (if script exists)
+                # ─────────────────────────────────────────────────────────────
+                ROOTFS="$ASSETS_DIR/gpu-rootfs.ext4"
+
+                if [[ ! -f "$ROOTFS" ]]; then
+                  if [[ -x "$ASSETS_DIR/create-gpu-rootfs.sh" ]]; then
+                    echo "→ Creating GPU rootfs..."
+                    "$ASSETS_DIR/create-gpu-rootfs.sh"
+                  else
+                    echo "→ Rootfs not found and no creation script"
+                    echo "  Please create: $ASSETS_DIR/create-gpu-rootfs.sh"
+                  fi
+                fi
+
+                if [[ -f "$ROOTFS" ]]; then
+                  echo "  Rootfs: $ROOTFS ($(stat -c%s "$ROOTFS" | numfmt --to=iec))"
+                fi
+
+                echo ""
+                echo "═══════════════════════════════════════════════════════════"
+                echo "  Assets Ready"
+                echo "═══════════════════════════════════════════════════════════"
+                echo ""
+                echo "To boot GPU VM:"
+                echo "  nix run .#fc-gpu"
+                echo ""
+                echo "With custom GPU:"
+                echo "  nix run .#fc-gpu -- --pci 0000:01:00.0"
+              '';
+            };
+          };
+
+          # ─────────────────────────────────────────────────────────────────────
+          # Apps for direct binary execution
+          # ─────────────────────────────────────────────────────────────────────
+          apps =
+            let
+              mkBuck2App = target: {
+                type = "app";
+                program = toString (
+                  pkgs.writeShellScript "run-app" ''
+                    set -e
+                    export AWS_LC_LIB_DIR="${awsLcStatic}/lib"
+                    export LIBSECCOMP_LIB_DIR="${libseccompStatic.lib}/lib"
+                    export ZSTD_LIB_DIR="${zstdStatic}/lib"
+                    if [ ! -e third-party/rust/vendor ]; then
+                      ln -sf "${rustVendor}" third-party/rust/vendor
+                    fi
+                    ${pkgs.buck2}/bin/buck2 run ${target} -- "$@"
+                  ''
+                );
+              };
+            in
+            {
+              # Firecracker
+              firecracker = mkBuck2App "//firecracker/src/firecracker:firecracker";
+              jailer = mkBuck2App "//firecracker/src/jailer:jailer";
+              seccompiler = mkBuck2App "//firecracker/src/seccompiler:seccompiler-bin";
+              rebase-snap = mkBuck2App "//firecracker/src/rebase-snap:rebase-snap";
+              snapshot-editor = mkBuck2App "//firecracker/src/snapshot-editor:snapshot-editor";
+
+              # Cloud Hypervisor
+              cloud-hypervisor = mkBuck2App "//cloud-hypervisor/cloud-hypervisor:cloud-hypervisor";
+              ch = mkBuck2App "//cloud-hypervisor/cloud-hypervisor:cloud-hypervisor";
+
+              default = mkBuck2App "//firecracker/src/firecracker:firecracker";
+            };
+        };
+    };
+
+in
+{
+  # :: [{ config : a, lib : b } | ... -> { _class : "flake" }]
+  imports = [
+    rustToolchainModule
+    vendorModule
+    staticLibsModule
+    devshellModule
+    scriptsModule
+  ];
+
+  # Export modules for downstream use
+  flake.flakeModules = {
+    rust-toolchain = rustToolchainModule;
+    vendor = vendorModule;
+    static-libs = staticLibsModule;
+    devshell = devshellModule;
+    scripts = scriptsModule;
+  };
+}

@@ -1,0 +1,30 @@
+{ lib, flake-parts-lib, ... }:
+let
+  # :: a
+  # :: a
+  inherit (lib)
+    mkOption
+    types
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkTransposedPerSystemModule
+    ;
+in
+mkTransposedPerSystemModule {
+  # :: "legacyPackages"
+  name = "legacyPackages";
+  # :: a
+  option = mkOption {
+    # :: a
+    type = types.lazyAttrsOf types.raw;
+    # :: {}
+    default = { };
+    # :: String
+    description = ''
+      An attribute set of unmergeable values. This is also used by [`nix build .#<attrpath>`](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-build.html).
+    '';
+  };
+  # :: Path
+  file = ./legacyPackages.nix;
+}

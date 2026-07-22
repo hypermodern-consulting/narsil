@@ -1,0 +1,1 @@
+Error: 40:13: infinite type: a occurs in { inputs : { self : a } }

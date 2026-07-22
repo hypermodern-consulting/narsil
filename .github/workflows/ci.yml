@@ -1,0 +1,48 @@
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#                                                                        // ci
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Two gates:
+#   check — every push/PR: hermetic build + the full test suite (560 tests:
+#           unit, property, adversarial, S-corpus + M-tree oracle goldens)
+#           via `nix flake check`.
+#   sweep — nightly + on demand: the full-nixpkgs differential oracle
+#           (43k files) against the committed ratchet baseline. Crashes and
+#           hangs are always fatal; counted buckets may only shrink.
+# GitHub-compatible syntax; also runs under Forgejo/Gitea Actions.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+jobs:
+  check:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: flake check (build + 560 tests)
+        run: nix flake check -L
+
+  sweep:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: full-nixpkgs oracle sweep (ratcheted)
+        run: ./scripts/ci-sweep.sh
+      - name: generative oracle fuzz (type-directed, differential)
+        run: nix develop -c cabal run -v0 narsil-oracle-fuzz -- --count 1000

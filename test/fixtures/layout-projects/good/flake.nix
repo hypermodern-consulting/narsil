@@ -1,0 +1,1 @@
+{ description = "good"; outputs = _: { }; }

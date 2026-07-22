@@ -1,0 +1,64 @@
+{ lib }:
+
+let
+  # :: a
+  # :: a
+  # :: a
+  inherit (lib) mkIf versionAtLeast versionOlder;
+in
+{
+
+  # Keeping these around in case we decide to change this horrible implementation :)
+  # :: { optional : Bool } -> { optional : Bool }
+  # :: Bool
+  option = x: x // { optional = true; };
+
+  # :: { optional : Bool, tristate : "y" }
+  yes = {
+    # :: "y"
+    tristate = "y";
+    # :: Bool
+    optional = false;
+  };
+  # :: { optional : Bool, tristate : "n" }
+  no = {
+    # :: "n"
+    tristate = "n";
+    # :: Bool
+    optional = false;
+  };
+  # :: { optional : Bool, tristate : "m" }
+  module = {
+    # :: "m"
+    tristate = "m";
+    # :: Bool
+    optional = false;
+  };
+  # :: { optional : Bool, tristate : Null }
+  unset = {
+    # :: Null
+    tristate = null;
+    # :: Bool
+    optional = false;
+  };
+  # :: a -> { freeform : a, optional : Bool }
+  freeform = x: {
+    # :: a
+    freeform = x;
+    # :: Bool
+    optional = false;
+  };
+
+  #  Common patterns/legacy used in common-config/hardened/config.nix
+  # :: a -> { whenAtLeast : b -> c, whenBetween : f -> g -> h, whenOlder : d -> e }
+  whenHelpers = version: {
+    # :: a -> b
+    whenAtLeast = ver: mkIf (versionAtLeast version ver);
+    # :: a -> b
+    whenOlder = ver: mkIf (versionOlder version ver);
+    # range is (inclusive, exclusive)
+    # :: a -> b -> c
+    whenBetween = verLow: verHigh: mkIf (versionAtLeast version verLow && versionOlder version verHigh);
+  };
+
+}

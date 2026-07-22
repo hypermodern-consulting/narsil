@@ -1,0 +1,52 @@
+{ lib, flake-parts-lib, getSystem, ... }:
+let
+  # :: a
+  # :: a
+  inherit (lib)
+    mkOption
+    types
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkPerSystemOption
+    ;
+in
+{
+  # :: { perSystem : a }
+  options = {
+    # :: a
+    perSystem = mkPerSystemOption ({ config, options, specialArgs, ... }: {
+      # :: Path
+      _file = ./perSystem.nix;
+      # :: { allModuleArgs : a }
+      options = {
+        # :: a
+        allModuleArgs = mkOption {
+          # :: a
+          type = types.lazyAttrsOf (types.raw or types.unspecified);
+          # :: Bool
+          internal = true;
+          # :: Bool
+          readOnly = true;
+          # :: "Internal option that exposes _module.args, for use by withSystem."
+          description = "Internal option that exposes _module.args, for use by withSystem.";
+        };
+      };
+      # :: { allModuleArgs : { config : a, options : b } }
+      config = {
+        # :: { config : a, options : b }
+        allModuleArgs = config._module.args // specialArgs // { inherit config options; };
+      };
+    });
+  };
+
+  # :: {}
+  config = {
+    _module.args = {
+      withSystem =
+        system: f:
+        f
+          (getSystem system).allModuleArgs;
+    };
+  };
+}

@@ -1,0 +1,41 @@
+{ lib, flake-parts-lib, ... }:
+let
+  # :: a
+  # :: a
+  # :: a
+  inherit (lib)
+    mkOption
+    types
+    literalExpression
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkTransposedPerSystemModule
+    ;
+in
+mkTransposedPerSystemModule {
+  # :: "devShells"
+  name = "devShells";
+  # :: a
+  option = mkOption {
+    # :: a
+    type = types.lazyAttrsOf types.package;
+    # :: {}
+    default = { };
+    # :: String
+    description = ''
+      An attribute set of packages to be used as shells.
+      [`nix develop .#<name>`](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-develop.html) will run `devShells.<name>`.
+    '';
+    # :: a
+    example = literalExpression ''
+      {
+        default = pkgs.mkShell {
+          nativeBuildInputs = with pkgs; [ wget bat cargo ];
+        };
+      }
+    '';
+  };
+  # :: Path
+  file = ./devShells.nix;
+}

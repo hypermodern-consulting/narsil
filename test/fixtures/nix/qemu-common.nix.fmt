@@ -1,0 +1,96 @@
+# QEMU-related utilities shared between various Nix expressions.
+{ lib, pkgs }:
+
+let
+  # :: Int -> a
+  zeroPad =
+    n:
+    lib.optionalString (n < 16) "0"
+    + (if n > 255 then throw "Can't have more than 255 nets or nodes!" else lib.toHexString n);
+in
+
+rec {
+  # :: a -> b -> String
+  qemuNicMac = net: machine: "52:54:00:12:${zeroPad net}:${zeroPad machine}";
+
+  # :: a -> b -> c -> [String]
+  qemuNICFlags = nic: net: machine: [
+    "-device virtio-net-pci,netdev=vlan${toString nic},mac=${qemuNicMac net machine}"
+    ''-netdev vde,id=vlan${toString nic},sock="$QEMU_VDE_SOCKET_${toString net}"''
+  ];
+
+  # :: Any
+  qemuSerialDevice =
+    if with pkgs.stdenv.hostPlatform; isx86 || isLoongArch64 || isMips64 || isRiscV then
+      "ttyS0"
+    else if (with pkgs.stdenv.hostPlatform; isAarch || isPower) then
+      "ttyAMA0"
+    else
+      throw "Unknown QEMU serial device for system '${pkgs.stdenv.hostPlatform.system}'";
+
+  # :: a -> b
+  qemuBinary =
+    qemuPkg:
+    let
+      # :: a
+      hostStdenv = qemuPkg.stdenv;
+      # :: a
+      hostSystem = hostStdenv.system;
+      # :: a
+      guestSystem = pkgs.stdenv.hostPlatform.system;
+
+      # :: { aarch64-linux : String, armv7l-linux : String, powerpc64-linux : String, powerpc64le-linux : String, riscv32-linux : String, riscv64-linux : String, x86_64-darwin : String, x86_64-linux : String }
+      linuxHostGuestMatrix = {
+        # :: String
+        x86_64-linux = "${qemuPkg}/bin/qemu-system-x86_64 -machine accel=kvm:tcg -cpu max";
+        # :: String
+        armv7l-linux = "${qemuPkg}/bin/qemu-system-arm -machine virt,accel=kvm:tcg -cpu max";
+        # :: String
+        aarch64-linux = "${qemuPkg}/bin/qemu-system-aarch64 -machine virt,gic-version=max,accel=kvm:tcg -cpu max";
+        # :: String
+        powerpc64le-linux = "${qemuPkg}/bin/qemu-system-ppc64 -machine powernv";
+        # :: String
+        powerpc64-linux = "${qemuPkg}/bin/qemu-system-ppc64 -machine powernv";
+        # :: String
+        riscv32-linux = "${qemuPkg}/bin/qemu-system-riscv32 -machine virt";
+        # :: String
+        riscv64-linux = "${qemuPkg}/bin/qemu-system-riscv64 -machine virt";
+        # :: String
+        x86_64-darwin = "${qemuPkg}/bin/qemu-system-x86_64 -machine accel=kvm:tcg -cpu max";
+      };
+      # :: { aarch64-darwin : { aarch64-linux : String, x86_64-linux : a }, x86_64-darwin : { x86_64-linux : String } }
+      otherHostGuestMatrix = {
+        # :: { aarch64-linux : String, x86_64-linux : a }
+        aarch64-darwin = {
+          # :: String
+          aarch64-linux = "${qemuPkg}/bin/qemu-system-aarch64 -machine virt,gic-version=2,accel=hvf:tcg -cpu max";
+          inherit (otherHostGuestMatrix.x86_64-darwin) x86_64-linux;
+        };
+        # :: { x86_64-linux : String }
+        x86_64-darwin = {
+          # :: String
+          x86_64-linux = "${qemuPkg}/bin/qemu-system-x86_64 -machine type=q35,accel=hvf:tcg -cpu max";
+        };
+      };
+
+      # :: Any
+      throwUnsupportedHostSystem =
+        let
+          # :: ["linux"]
+          supportedSystems = [ "linux" ] ++ (lib.attrNames otherHostGuestMatrix);
+        in
+        throw "Unsupported host system ${hostSystem}, supported: ${lib.concatStringsSep ", " supportedSystems}";
+      # :: a -> Any
+      throwUnsupportedGuestSystem =
+        guestMap:
+        throw "Unsupported guest system ${guestSystem} for host ${hostSystem}, supported: ${lib.concatStringsSep ", " (lib.attrNames guestMap)}";
+    in
+    if hostStdenv.hostPlatform.isLinux then
+      linuxHostGuestMatrix.${guestSystem} or "${qemuPkg}/bin/qemu-kvm"
+    else
+      let
+        # :: a
+        guestMap = (otherHostGuestMatrix.${hostSystem} or throwUnsupportedHostSystem);
+      in
+      (guestMap.${guestSystem} or (throwUnsupportedGuestSystem guestMap));
+}

@@ -1,0 +1,98 @@
+# nix/flake-modules/gpu-broker.nix
+#
+# GPU Broker package for Isospin
+#
+# Provides:
+#   packages.gpu-broker - GPU broker binary (dynamically linked)
+#   packages.gpu-broker-static - GPU broker binary (statically linked for VMs)
+#
+# Usage:
+#   nix build .#gpu-broker
+#   nix build .#gpu-broker-static
+#   nix run .#gpu-broker -- --help
+#
+{ inputs, ... }:
+{
+  # :: "flake"
+  _class = "flake";
+
+  config.perSystem =
+    {
+      pkgs,
+      lib,
+      rustVendor,
+      isospinConfig,
+      ...
+    }:
+    let
+      rustCfg = isospinConfig.rust;
+
+      overlays = [ (import inputs.rust-overlay) ];
+      pkgsWithRust = import inputs.nixpkgs {
+        system = pkgs.stdenv.hostPlatform.system;
+        inherit overlays;
+      };
+
+      rustToolchain = pkgsWithRust.rust-bin.stable.${rustCfg.version}.default;
+
+      # Common build settings
+      commonBuildSettings = {
+        pname = "gpu-broker";
+        version = "0.1.0";
+
+        src = ../../gpu-broker;
+
+        cargoLock = {
+          lockFile = ../../gpu-broker/Cargo.lock;
+        };
+
+        # Skip tests during build (run separately)
+        doCheck = false;
+
+        meta = {
+          description = "GPU broker for NVIDIA ioctl proxying";
+          license = lib.licenses.mit;
+          platforms = [
+            "x86_64-linux"
+            "aarch64-linux"
+          ];
+        };
+      };
+
+      # Dynamic (regular) build
+      gpu-broker = pkgs.rustPlatform.buildRustPackage (
+        commonBuildSettings
+        // {
+          nativeBuildInputs = with pkgs; [
+            pkg-config
+            rustToolchain
+          ];
+
+          buildInputs = with pkgs; [
+            openssl
+          ];
+        }
+      );
+
+      # Static build using musl for VM deployment
+      # This produces a fully static binary that works in minimal rootfs
+      # Uses pkgsStatic's built-in rust toolchain for consistent musl linking
+      gpu-broker-static = pkgs.pkgsStatic.rustPlatform.buildRustPackage (
+        commonBuildSettings
+        // {
+          nativeBuildInputs = with pkgs.pkgsStatic; [
+            pkg-config
+          ];
+
+          buildInputs = with pkgs.pkgsStatic; [
+            openssl
+          ];
+        }
+      );
+    in
+    {
+      packages = {
+        inherit gpu-broker gpu-broker-static;
+      };
+    };
+}

@@ -1,0 +1,69 @@
+{ config, lib, flake-parts-lib, ... }:
+let
+  # :: a
+  # :: a
+  # :: a
+  # :: a
+  # :: a
+  inherit (lib)
+    filterAttrs
+    mapAttrs
+    mkOption
+    optionalAttrs
+    types
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkPerSystemOption
+    ;
+in
+{
+  # :: { perSystem : a }
+  options = {
+    flake.formatter = mkOption {
+      type = types.lazyAttrsOf types.package;
+      default = { };
+      description = ''
+        An attribute set of per system a package used by [`nix fmt`](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-fmt.html).
+      '';
+    };
+
+    # :: a
+    perSystem = mkPerSystemOption {
+      # :: Path
+      _file = ./formatter.nix;
+      # :: { formatter : a }
+      options = {
+        # :: a
+        formatter = mkOption {
+          # :: a
+          type = types.nullOr types.package;
+          # :: Null
+          default = null;
+          # :: String
+          description = ''
+            A package used by [`nix fmt`](https://nixos.org/manual/nix/stable/command-ref/new-cli/nix3-fmt.html).
+          '';
+        };
+      };
+    };
+  };
+  # :: { perInput : a -> b -> c }
+  config = {
+    flake.formatter =
+      mapAttrs
+        (k: v: v.formatter)
+        (filterAttrs
+          (k: v: v.formatter != null)
+          config.allSystems
+        );
+
+    # :: a -> b -> c
+    perInput = system: flake:
+      optionalAttrs (flake?formatter.${system}) {
+        # :: a
+        formatter = flake.formatter.${system};
+      };
+
+  };
+}

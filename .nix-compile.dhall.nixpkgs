@@ -1,0 +1,137 @@
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--                                   // .nix-compile.dhall // nixpkgs
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--
+--   Copy this to the root of your nixpkgs checkout as .nix-compile.dhall
+--   then run:  nix-compile check ./
+--
+--   This config:
+--     - Enforces nixpkgs derivation quality (missing-meta, missing-description)
+--     - Warns on type inference issues (may be false positives)
+--     - Silences rules that don't apply to nixpkgs (dhall templating, prelude wrappers)
+--     - Keeps bash safety checks active (heredoc, eval, backtick)
+--     - Ignores non-package directories
+--     - Does NOT skip files with rec/dynamic-attrs (lints them, skips type-check)
+
+let Severity = < Off | Info | Warning | Error >
+
+in  { profile = "nixpkgs"
+    , layout = "flake-parts"
+    , lsp = { max-threads = 4, max-memory-mb = 256, max-disk-mb = 512 }
+    , extra-ignores =
+      [ ".github/**"      -- CI scripts, not packages
+      , "maintainers/**"  -- maintainer scripts
+      , "doc/**"          -- documentation
+      , "ci/**"           -- CI helper scripts
+      , "pkgs/top-level/**" -- auto-generated aliases
+      , "nixos/doc/**"    -- NixOS documentation
+      , "**/test*/**"     -- test directories
+      , "**/tests/**"     -- test directories
+      , "**/fixtures/**"  -- test fixtures
+      ]
+    , overrides =
+      [ -- -- Nix: opinionated rules to silence for nixpkgs  --
+        { id = "with-lib"
+        , severity = Severity.Off
+        , reason = Some "nixpkgs uses with pervasively as the primary scope mechanism"
+        }
+      , { id = "rec-anywhere"
+        , severity = Severity.Off
+        , reason = Some "nixpkgs uses rec in several legitimate patterns"
+        }
+      , { id = "no-substitute-all"
+        , severity = Severity.Off
+        , reason = Some "dhall templating is straylight-specific"
+        }
+      , { id = "no-raw-mkderivation"
+        , severity = Severity.Off
+        , reason = Some "nixpkgs does not have prelude wrappers"
+        }
+      , { id = "no-raw-runcommand"
+        , severity = Severity.Off
+        , reason = Some "runCommand is a standard nixpkgs build function"
+        }
+      , { id = "no-raw-writeshellapplication"
+        , severity = Severity.Off
+        , reason = Some "writeShellApplication is a standard nixpkgs function"
+        }
+      , { id = "no-translate-attrs-outside-prelude"
+        , severity = Severity.Off
+        , reason = Some "nixpkgs IS the prelude — translateAttrs/mapAttrs are expected"
+        }
+      , { id = "prefer-write-shell-application"
+        , severity = Severity.Off
+        , reason = Some "both writeShellScript and writeShellApplication are legitimate"
+        }
+      , { id = "or-null-fallback"
+        , severity = Severity.Off
+        , reason = Some "or-null is a standard nixpkgs pattern"
+        }
+      , { id = "long-inline-string"
+        , severity = Severity.Off
+        , reason = Some "cosmetic; nixpkgs has its own formatting conventions"
+        }
+      , { id = "non-lisp-case"
+        , severity = Severity.Off
+        , reason = Some "nixpkgs uses kebab-case naming"
+        }
+      , { id = "missing-class"
+        , severity = Severity.Off
+        , reason = Some "not a nixpkgs concept"
+        }
+
+        -- -- Type inference: warn, don't error  --
+      , { id = "type-check-failure"
+        , severity = Severity.Warning
+        , reason = Some "type inference has false positives on complex nixpkgs code"
+        }
+
+        -- -- C++ rules: not applicable  --
+      , { id = "cpp-using-namespace-header"
+        , severity = Severity.Off
+        , reason = Some "C++ rules not applicable to nixpkgs Nix code"
+        }
+      , { id = "cpp-raw-new-delete"
+        , severity = Severity.Off
+        , reason = Some "C++ rules not applicable to nixpkgs Nix code"
+        }
+      , { id = "cpp-ban-cuda-identifier"
+        , severity = Severity.Off
+        , reason = Some "C++ rules not applicable to nixpkgs Nix code"
+        }
+      , { id = "cpp-namespace-closing-comment"
+        , severity = Severity.Off
+        , reason = Some "C++ rules not applicable to nixpkgs Nix code"
+        }
+
+        -- -- Bash: keep safety checks  --
+      , { id = "no-heredoc-in-inline-bash"
+        , severity = Severity.Error
+        , reason = Some "security: heredocs in inline bash are fragile and bug-prone"
+        }
+      , { id = "no-eval"
+        , severity = Severity.Error
+        , reason = Some "security: eval is dangerous in inline scripts"
+        }
+      , { id = "no-backtick"
+        , severity = Severity.Error
+        , reason = Some "backticks are deprecated; use $() instead"
+        }
+
+        -- -- Derivation quality: enforce nixpkgs guidelines  --
+      , { id = "missing-meta"
+        , severity = Severity.Error
+        , reason = Some "required by nixpkgs contribution guidelines"
+        }
+      , { id = "missing-description"
+        , severity = Severity.Error
+        , reason = Some "required by nixpkgs contribution guidelines"
+        }
+
+        -- -- Package structure  --
+      , { id = "default-nix-in-packages"
+        , severity = Severity.Warning
+        , reason = Some "package directories should contain default.nix"
+        }
+      ]
+    }

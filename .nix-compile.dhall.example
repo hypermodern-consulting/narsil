@@ -1,0 +1,42 @@
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--                                                       // .nix-compile.dhall
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--
+-- Project lint configuration.
+-- Copy this to your project root and customize.
+--
+
+let Severity = < Error | Warning | Info | Off >
+
+let RuleOverride = { id : Text, severity : Severity, reason : Optional Text }
+
+let Lsp = { max-threads : Natural, max-memory-mb : Natural, max-disk-mb : Natural }
+
+let Config =
+      { profile : Text
+      , layout : Text
+      , extra-ignores : List Text
+      , overrides : List RuleOverride
+      , lsp : Lsp
+      }
+
+let override = \(id : Text) -> \(severity : Severity) -> { id, severity, reason = None Text }
+
+let override-with-reason = \(id : Text) -> \(severity : Severity) -> \(reason : Text) -> { id, severity, reason = Some reason }
+
+in  { profile = "standard"
+    , layout = "straylight"
+    , extra-ignores =
+      [ "vendor/**"
+      , "third-party/**"
+      , ".direnv/**"
+      ]
+    , overrides =
+      [ -- Example: downgrade rec-anywhere to info
+        override "rec-anywhere" Severity.Info
+        -- Example: enable lisp-case for this project
+        -- , override "non-lisp-case" Severity.Warning
+      ]
+      -- LSP knobs: warm-eval-pool size and the nixpkgs eval-cache quotas.
+    , lsp = { max-threads = 4, max-memory-mb = 256, max-disk-mb = 512 }
+    } : Config

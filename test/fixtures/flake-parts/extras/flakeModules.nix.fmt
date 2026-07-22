@@ -1,0 +1,64 @@
+{ self, lib, flake-parts-lib, moduleLocation, ... }:
+let
+  # :: a
+  # :: a
+  # :: a
+  inherit (lib)
+    mapAttrs
+    mkOption
+    types
+    ;
+  # :: a
+  inherit (flake-parts-lib)
+    mkAliasOptionModule
+    ;
+
+  # :: a
+  flakeModulesOption = mkOption {
+    # :: a
+    type = types.lazyAttrsOf types.deferredModule;
+    # :: {}
+    default = { };
+    # :: a
+    apply = mapAttrs (k: v: {
+      # :: String
+      _file = "${toString moduleLocation}#flakeModules.${k}";
+      # :: String
+      key = "${toString moduleLocation}#flakeModules.${k}";
+      # :: [a]
+      imports = [ v ];
+      # :: "flake"
+      _class = "flake";
+    });
+    # :: String
+    description = ''
+      flake-parts modules for use by other flakes.
+
+      If the flake defines only one module, it should be `flakeModules.default`.
+
+      You can not read this option in defining the flake's own `imports`. Instead, you can
+      put the module in question into its own file or let binding and reference
+      it both in `imports` and export it with this option.
+
+      See [Dogfood a Reusable Module](../dogfood-a-reusable-module.md) for details and an example.
+    '';
+  };
+in
+{
+  # :: { flake : a }
+  options = {
+    # :: a
+    flake = mkOption {
+      # :: a
+      type = types.submoduleWith {
+        # :: [{}]
+        modules = [
+          (mkAliasOptionModule [ "flakeModule" ] [ "flakeModules" "default" ])
+          {
+            options.flakeModules = flakeModulesOption;
+          }
+        ];
+      };
+    };
+  };
+}
