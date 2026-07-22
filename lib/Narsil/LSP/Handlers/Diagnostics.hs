@@ -20,6 +20,7 @@ module Narsil.LSP.Handlers.Diagnostics (
   -- * Whole-expression diagnostics
   diagnosticsForExpr,
   diagnosticsForExprWith,
+  moduleModeEnv,
 
   -- * Single-finding rendering (used across handlers / tests)
   toNixDiag,
@@ -90,9 +91,7 @@ typeDiags config env path expr =
   sevOf (Just Config.SevWarning) = DiagnosticSeverity_Warning
   sevOf (Just Config.SevInfo) = DiagnosticSeverity_Information
   sevOf _ = DiagnosticSeverity_Error
-  kind = detectedKind (detectKind path expr)
-  moduleMode = kind `elem` [Flake, FlakeModule, NixOSModule, HomeModule, DarwinModule]
-  env' = if moduleMode then env{envModuleParams = True} else env
+  env' = moduleModeEnv env path expr
   toDiag (sev, err) =
     let (sp, summary) = typeErrLoc (T.breakOn ": " err)
      in (spToDiagnostic ("type: " <> summary) sp)
@@ -180,6 +179,20 @@ bashErrorCode Forbidden.VHeredoc = "NARSIL-B001"
 bashErrorCode Forbidden.VHereString = "NARSIL-B002"
 bashErrorCode Forbidden.VEval = "NARSIL-B003"
 bashErrorCode Forbidden.VBacktick = "NARSIL-B004"
+
+{- | The env adjusted for the FILE KIND: flake\/module-shaped files infer with
+module params dynamic and the declared option spine bound — the same
+'detectKind' dispatch as `narsil check`. Hover\/inlay\/diagnostics must all
+use this or the editor's features disagree with each other about the same
+buffer.
+-}
+moduleModeEnv :: TypeEnv -> FilePath -> NExprLoc -> TypeEnv
+moduleModeEnv env path expr
+  | moduleMode = env{envModuleParams = True}
+  | otherwise = env
+ where
+  kind = detectedKind (detectKind path expr)
+  moduleMode = kind `elem` [Flake, FlakeModule, NixOSModule, HomeModule, DarwinModule]
 
 -- | Render one nix-lint 'NixViolation' as an LSP 'Diagnostic' (code + context).
 toNixDiag :: NixViolation -> Diagnostic

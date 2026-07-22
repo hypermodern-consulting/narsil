@@ -72,6 +72,7 @@ import Narsil.LSP.Handlers.Diagnostics (
   NixViolation (..),
   ViolationType (..),
   diagnosticsForExprWith,
+  moduleModeEnv,
   nixCode,
   spToDiagnostic,
   toNixDiag,
@@ -452,7 +453,10 @@ hoverHandler req responder = do
   withVf uri pos vf = maybe (hover parseErr) (withExpr uri pos) (lspSafeParse (virtualFileText vf))
   withExpr uri (Position l c) expr = do
     baseEnv <- liftIO $ buildCrossEnv uri
-    env <- liftIO $ enrichPkgsOracle uri expr baseEnv
+    enriched <- liftIO $ enrichPkgsOracle uri expr baseEnv
+    -- module-shaped buffers hover with the declared spine bound, exactly
+    -- as diagnostics infer them — the features must agree about the buffer
+    let env = moduleModeEnv enriched (fromMaybe "<buffer>" (uriToFilePath uri)) expr
     hover
       ( maybe
           noExpr
@@ -717,7 +721,8 @@ inlayHintHandler req responder = do
  where
   nullResp = responder $ Right $ InR Null
   withExpr uri range expr = do
-    env <- liftIO $ buildCrossEnv uri
+    baseEnv <- liftIO $ buildCrossEnv uri
+    let env = moduleModeEnv baseEnv (fromMaybe "<buffer>" (uriToFilePath uri)) expr
     responder $ Right $ InL (inlayHintsForExpr env expr range)
 
 -- ═══════════════════════ diagnostics engine ═══════════════════════
