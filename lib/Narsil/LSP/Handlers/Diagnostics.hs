@@ -196,7 +196,7 @@ nixCode VRawRunCommand = "ALEPH-N007"
 nixCode VRawWriteShellApplication = "ALEPH-N008"
 nixCode VWriteShellScript = "ALEPH-N011"
 nixCode (VLongInlineString n) = "ALEPH-N012 (" <> T.pack (show n) <> " chars)"
-nixCode (VNonLispCase name) = "ALEPH-N013 (`" <> name <> "`)"
+nixCode (VNonLispCase name) = "ALEPH-N015 (`" <> name <> "`)"
 
 {- | Build an error-severity LSP 'Diagnostic' from a message and a 1-based
   source 'Span', converting to 0-based LSP positions (clamped at zero).

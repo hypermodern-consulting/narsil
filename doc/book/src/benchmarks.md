@@ -14,7 +14,7 @@ cabal run narsil-bench
   constant factor is high (~150 μs for a let-chain of 10).
 - **analyzeDepth** — the depth precondition. Strictly linear in AST size;
   ~1 ns per node. A 150-deep app chain takes ~457 ns; a 1000-element list ~2 μs.
-- **inferExprWithEnv** — HM inference (`Narsil.Nix.Inference`). Roughly
+- **inferExprWithEnv** — HM inference (`Narsil.Inference.Nix`). Roughly
   linearithmic: the substitution is triangular (insert + resolve-on-read),
   `desugarNestedBindings` is O(n log n), and non-recursive bindings use `mapM`
   rather than `++`-append. The old super-quadratic worst case is gone — wide

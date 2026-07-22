@@ -252,6 +252,27 @@ Inline strings longer than 120 characters clutter source files, make diffs hard 
 builtins.readFile ./data.txt
 ```
 
+### ALEPH-N015: Non-lisp-case binding
+
+```
+ALEPH-N015: non-lisp-case binding `myThing`
+```
+
+Author-chosen names — `let` bindings — use lowercase-with-dashes in
+straylight code. Attribute keys mirror external schemas (`buildInputs`,
+`perSystem`) and lambda formals are caller-dictated, so only `let` bindings
+are checked; trailing primes (`x'`) are allowed. **Opt-in**: this rule is
+off by default and under every profile except `strict` (or an explicit
+override). In the editor, the finding carries a complete rename quickfix —
+declaration plus every reference.
+
+**Rule ID:** `non-lisp-case`
+
+**Use instead:**
+```nix
+let my-thing = 1; in my-thing
+```
+
 ### ALEPH-N013: Missing `meta`
 
 ```
@@ -292,18 +313,30 @@ meta = {
 
 ## Layout rules
 
-Layout rules (prefix `ALEPH-L`) apply to projects using the flake-parts module convention. The module graph is derived from the directory structure, so file placement and naming matter.
+Layout rules (codes `E001`–`E010`) validate file placement and naming
+against the project's configured [layout convention](./layout-conventions.md)
+(`layout = "flake-parts"`, `"nixpkgs-by-name"`, `"straylight"`, …). They run
+in directory mode (`narsil check .`) and each finding names the expected
+location or name.
 
-| Code       | Rule ID         | Condition                     | Message                                               |
-| ---------- | --------------- | ----------------------------- | ----------------------------------------------------- |
-| ALEPH-L001 | N/A             | `_index.nix` file found       | Module graph is derived from directory structure      |
-| ALEPH-L002 | N/A             | `_main.nix` file found        | Use explicit imports in flake.nix                     |
-| ALEPH-L003 | `missing-class` | Module missing `_class` attr  | `_class = "<kind>"` required                          |
-| ALEPH-L004 | N/A             | Wrong `_class` for directory  | Got `"<actual>"`, expected `"<expected>"`             |
+| Code | Condition |
+| --- | --- |
+| E001 | File in wrong location for its module kind |
+| E002 | File in forbidden location |
+| E003 | Wrong file name convention |
+| E004 | Wrong attribute name convention |
+| E005 | Wrong identifier convention |
+| E006 | Must be a flake module but isn't |
+| E007 | `_index.nix` files are banned |
+| E008 | `_main.nix` files are banned |
+| E009 | Missing required `_class` attribute |
+| E010 | `_class` value doesn't match location |
 
-`_class` values match the module directory kind: `"flake"`, `"nixos"`, `"home"`, etc.
-
----
+```
+error[E001]: File in wrong location for NixOSModule
+ --> stray-module.nix:1:1
+  = help: expected: modules/nixos/... or nixos-modules/...
+```
 
 ## Package rules
 
@@ -325,7 +358,10 @@ Every directory classified as a package must contain a `default.nix` entry point
 
 ### Type inference failure
 
-When narsil's type inference encounters an error, the failure is treated as a rule violation. The severity can be adjusted or the rule suppressed entirely.
+When narsil's type inference finds an error, the finding is governed like
+any other rule. Default severity is **Error**; the `nixpkgs` profile remaps
+it to **Warning** (report but pass — the lax shipping mode); `Off`
+suppresses it entirely. The same severity applies in the editor.
 
 **Rule ID:** `type-check-failure`
 
@@ -406,12 +442,14 @@ All suppressible rules and their identifiers:
 | ALEPH-N012  | `long-inline-string`                 | Inline string > 120 chars            |
 | ALEPH-N013  | `missing-meta`                       | Derivation missing `meta`            |
 | ALEPH-N014  | `missing-description`                | `meta` missing `description`         |
+| ALEPH-N015  | `non-lisp-case`                      | Non-lisp-case `let` binding (opt-in) |
 | ALEPH-P001  | `default-nix-in-packages`            | Package directory without default.nix|
 | —           | `type-check-failure`                 | Type inference error                 |
 
 Rules **ALEPH-B005** (bare commands) and **ALEPH-B006** (dynamic commands) cannot be suppressed — they represent fundamental safety properties of the analysis system.
 
-Layout rules **ALEPH-L001**, **ALEPH-L002**, and **ALEPH-L004** are not individually configurable.
+Layout rules (`E001`–`E010`) are governed by the configured layout
+convention rather than per-rule severities.
 
 ### File ignores
 

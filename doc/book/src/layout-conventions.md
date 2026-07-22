@@ -287,8 +287,8 @@ Forbidden patterns work the same way — if a forbidden pattern matches, the fil
 Define a `Convention` value in Haskell:
 
 ```haskell
-import Narsil.Nix.LayoutConvention
-import Narsil.Nix.ModuleKind
+import Narsil.Layout.Convention
+import Narsil.Layout.ModuleKind
 
 myConvention :: Convention
 myConvention = Convention

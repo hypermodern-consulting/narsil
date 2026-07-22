@@ -138,23 +138,21 @@ Exits 1 on parse or I/O errors.
 narsil infer ./default.nix
 ```
 
-Runs Hindley-Milner type inference on the Nix file and emits the
-source with `# :: Type` annotations inserted on every binding.  If
-the expression is a pure lambda (`{lib, ...}: ...`), it will also
-annotate the `let`-bound identifiers in the body with their inferred
-result types.
+Runs Hindley–Milner type inference on the Nix file and emits the source
+with `# :: Type` annotations on every binding, to stdout. Exits 1 on parse
+or inference errors.
 
-Output is written to stdout.  Exits 1 on parse or inference errors.
-
-**Tip**: pipe the output into `narsil fmt` for a clean annotated
-source:
+Variants:
 
 ```
-narsil infer ./default.nix | narsil fmt - > ./default.nix
+narsil infer -i ./default.nix    # rewrite the file in place (atomic,
+                                 # idempotent — prior annotations replaced)
+narsil infer -r ./tree           # annotate every .nix under a tree;
+                                 # per-file non-fatal, honors ignores
 ```
 
-(Note that `fmt` does not read stdin here—pipe through a temporary
-file or editor.)
+Both variants seed cross-module types from the import/callPackage closure,
+so `import ./dep.nix` annotates as `./dep.nix`'s actual inferred type.
 
 ---
 

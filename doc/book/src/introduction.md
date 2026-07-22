@@ -1,25 +1,62 @@
 # narsil
 
-Compile-time static analysis for Nix expressions and embedded bash scripts.
+> *"The Sword that was Broken shall be reforged."*
 
-narsil sits in the build pipeline and catches bugs _before_ runtime:
+narsil is a compile-time type checker, linter, and language server for the
+Nix expression language (and the bash embedded in it). It finds bugs before
+evaluation does — including the bugs evaluation *can't* find, because
+laziness hides them behind configuration flags nobody has flipped yet.
 
-- **Type inference** for bash environment variables -- infers types from `${VAR:-default}` patterns, config assignments, and command usage
-- **Hindley-Milner type inference** for Nix expressions -- row polymorphism, type schemes, attrset typing
-- **Policy enforcement** -- bans `with`, `rec`, heredocs, `eval`, backticks, and bare (non-store-path) commands
-- **Config generation** -- replaces heredoc-templated config files with typed `emit-config json|yaml|toml` functions
-- **Scope graphs** -- Visser-style scope graphs for IDE tooling (go-to-definition, find-references), exportable as JSON or Dhall
+## The numbers
 
-## Design principles
+Claims about static analysis for Nix are cheap; corpus verification is not.
+narsil's engine is held to a ratcheted differential baseline against all of
+nixpkgs:
 
-1. **Fail at build time, not runtime.** Every bash `${VAR}` reference is statically checked. Every command is verified against store paths or a known-builtins allowlist.
+| metric | value |
+| --- | --- |
+| nixpkgs files checked | **43,170** (every `.nix` file at the pinned revision) |
+| well-typed | **43,134 (99.92%)** |
+| residual diagnostics | **28 files (0.065%)** — every one classified |
+| crashes / hangs / timeouts | **0 / 0 / 0** |
+| test suite | **611 tests**, six suites |
 
-2. **No escape hatches.** Forbidden constructs (heredocs, eval, backticks) are banned unconditionally. There is no `# narsil: ignore` directive.
+The 28 residuals are not a mystery pile: roughly ten are **real bugs in
+nixpkgs** (confirmed by hand — `+` where `++` was meant, `optionalString`
+fed lists, a builtin that doesn't exist), seven are ledgered idioms whose
+safety depends on laziness the type system deliberately does not model, and
+the rest are the metaprogramming core of `lib/` itself. The precise
+accounting — what a diagnostic *asserts*, what the checker deliberately
+declines to decide — is written down in [The Contract](./contract.md).
 
-3. **Two type systems, one tool.** Bash gets simple first-order types (`TInt`, `TString`, `TBool`, `TPath`). Nix gets full Hindley-Milner with row polymorphism. They meet at the `nix` command: embedded bash is extracted from Nix expressions (`writeShellScript`, `writeShellApplication`, etc.), both are linted and type-checked, and violations from either language are reported together.
+## What it does
 
-4. **Conservative by default.** Unknown commands produce no type constraints. Unsupported Nix constructs (`with`, `rec`, dynamic attrs) cause the file to be skipped rather than producing wrong results.
+- **Hindley–Milner type inference** for Nix — row-polymorphic records, union
+  types, occurrence narrowing, let-polymorphism, and a typed model of the
+  NixOS module system that *reads* `mkOption { type = types.…; }`
+  declarations instead of guessing.
+- **A language server** — type errors as squiggles, inferred-type inlay
+  hints that survive errors, scope-aware completion, go-to-definition,
+  rename with full-reference edits, document outline, and eval-backed
+  `pkgs.…` completion.
+- **Policy enforcement** — a profile-governed rule set (`with`, `rec`,
+  heredocs, naming conventions, derivation hygiene) shared letter-for-letter
+  between the CLI and the editor.
+- **Bash analysis** — type inference for environment variables in embedded
+  shell scripts, plus injection-shaped lint rules.
+- **Layout conventions** — directory-structure enforcement for flake-parts,
+  nixpkgs-by-name, and other project shapes.
+- **Typed config generation** — `emit-config` replaces heredoc-templated
+  config files with schema-checked emitters.
 
-## Project status
+## Where to start
 
-611 tests — QuickCheck properties, a differential oracle against `nix-instantiate`, a mutation ledger, and a generative well-typed fuzzer — plus a working LSP server. The bash analysis pipeline, Nix type inference, scope graph resolution, emit-config generation, LSP server (diagnostics, hover, go-to-definition, completion, references, rename, formatting), and policy enforcement are all tested and working. See [Testing](./testing.md) for the full breakdown.
+[Getting Started](./getting-started.md) installs it and runs the first
+check. [The Type Checker](./type-checker.md) shows what it catches and why
+you can trust it. [The Language Server](./lsp.md) wires it into your
+editor. If you want to know exactly where the boundary of the analysis
+lies — the honest answer, adversarially stated — read
+[The Contract](./contract.md).
+
+narsil is written almost entirely by Claude (Anthropic); see
+[Credits](./credits.md).

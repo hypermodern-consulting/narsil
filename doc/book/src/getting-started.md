@@ -231,20 +231,15 @@ narsil lsp
 
 The LSP provides diagnostics (lint violations, type errors), hover types, go-to-definition, find-references, completion, rename, and formatting for Nix files. It also extracts and checks embedded bash inside `writeShellScript*` calls.
 
-To use it with an editor, point the LSP client at `narsil lsp` as the server command. For example, in Neovim with `nvim-lspconfig`:
-
-```lua
-require('lspconfig').custom_lsp.setup {
-  cmd = { 'narsil', 'lsp' },
-  filetypes = { 'nix' },
-}
-```
+Point any LSP client at `narsil lsp` as the server command for the `nix`
+language. Full feature list and per-editor setup (Neovim, Helix, VS Code)
+in [The Language Server](./lsp.md).
 
 ## CI integration
 
 `narsil check <directory>` runs the full pipeline on all `.nix` files recursively (skipping `.git`, `.direnv`, `node_modules`, `.cache`, `.lake`, `result`, `result-lib`, `target`). The CI pipeline has four phases:
 
-1. **Typecheck** — runs type inference on every `.nix` file in parallel (bounded to 16 workers). Files with unsupported constructs (`with`, `rec`, dynamic attrs) are skipped.
+1. **Typecheck** — runs type inference on every `.nix` file in parallel (capability-bounded). `with`, `rec`, and dynamic attributes are fully supported; nothing is skipped on the pinned-nixpkgs corpus.
 2. **Graph** — builds the module dependency graph from `flake.nix`, checks `import` statements, runs lint and layout convention validation.
 3. **Nix** — extracts embedded bash from `writeShellScript`, `writeShellApplication`, `writeShellScriptBin` calls and runs the full bash pipeline on each.
 4. **Package** — checks that every `packages/` subdirectory contains a `default.nix`.

@@ -1,6 +1,6 @@
 # Safety
 
-`Narsil.Safety` is the single source of truth for the recursion-depth
+`Narsil.Core.Safety` is the single source of truth for the recursion-depth
 limit, the parser exception wrappers, and the structured DoS-error type. Every
 public entry point routes through it before doing any analysis.
 

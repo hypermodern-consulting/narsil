@@ -247,8 +247,8 @@ testCodeActionRenameEdit =
   expr = parse src
   sg = Scope.fromNixExpr Nothing expr
   strictCfg = defaultConfig{configProfile = "strict"}
-  n13 d = "ALEPH-N013" `T.isInfixOf` (let Diagnostic{_message = m} = d in m)
-  diags = filter n13 (diagnosticsForExpr strictCfg "<buffer>" expr)
+  n15 d = "ALEPH-N015" `T.isInfixOf` (let Diagnostic{_message = m} = d in m)
+  diags = filter n15 (diagnosticsForExpr strictCfg "<buffer>" expr)
   actions = concatMap (violationAction (filePathToUri "/b.nix") (Just sg)) diags
 
 -- ── navigation (definition / references) ───────────────────────────

@@ -362,7 +362,7 @@ scope graph — apply-and-done, not a suggestion.
 violationAction :: Uri -> Maybe Scope.ScopeGraph -> Diagnostic -> [CodeAction]
 violationAction uri mSg diag
   | "ALEPH-N001" `T.isInfixOf` msg = [simpleAction "Replace `with` by explicit bindings" True diag]
-  | "ALEPH-N013" `T.isInfixOf` msg = renameAction
+  | "ALEPH-N015" `T.isInfixOf` msg = renameAction
   | "ALEPH-N011" `T.isInfixOf` msg = [simpleAction "Use writeShellApplication instead" True diag]
   | "MISSING-META" `T.isInfixOf` msg = [simpleAction "Insert `meta` attribute" True diag]
   | "MISSING-DESCRIPTION" `T.isInfixOf` msg = [simpleAction "Add description to meta" True diag]
@@ -371,7 +371,7 @@ violationAction uri mSg diag
   | otherwise = []
  where
   msg = T.toUpper (diagMsg diag)
-  -- "ALEPH-N013 (`myThing`): …" — the offending name travels in the message
+  -- "ALEPH-N015 (`myThing`): …" — the offending name travels in the message
   renameAction = maybe [] pure $ do
     sg <- mSg
     name <- nameInBackticks (diagMsg diag)

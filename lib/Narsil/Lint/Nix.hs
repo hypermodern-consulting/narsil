@@ -295,7 +295,7 @@ formatNixErrorCode VRawWriteShellApplication = "ALEPH-N008: raw `writeShellAppli
 formatNixErrorCode VWriteShellScript = "ALEPH-N011: `writeShellScript`"
 formatNixErrorCode (VLongInlineString n) =
   "ALEPH-N012: long inline string (" <> T.pack (show n) <> " chars)"
-formatNixErrorCode (VNonLispCase name) = "ALEPH-N013: non-lisp-case binding `" <> name <> "`"
+formatNixErrorCode (VNonLispCase name) = "ALEPH-N015: non-lisp-case binding `" <> name <> "`"
 
 -- ── remediation notes ──────────────────────────────────────────────
 -- These are the full-text explanations shown to the user after the

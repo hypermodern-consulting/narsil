@@ -24,7 +24,7 @@ narsil is a Haskell static analysis tool that provides compile-time type checkin
 
 ## System Overview
 
-The system processes two distinct languages — Nix expressions and bash scripts — through separate type-inference pipelines. These pipelines converge in three places: (1) the CLI dispatch layer, (2) the LSP diagnostics engine, and (3) the Nix-to-bash extraction bridge in `Narsil.Nix.Parse`.
+The system processes two distinct languages — Nix expressions and bash scripts — through separate type-inference pipelines. These pipelines converge in three places: (1) the CLI dispatch layer, (2) the LSP diagnostics engine, and (3) the Nix-to-bash extraction bridge in `Narsil.Syntax.Parse`.
 
 ```
                         ┌─────────────────────┐
@@ -84,7 +84,7 @@ extractFacts :: BashAST -> [Fact]
 
 Walks the ShellCheck token tree and pattern-matches against bash idioms to produce `Fact` values. Each `Fact` carries a `Span` (source location) for downstream diagnostics.
 
-**Fact types** (from `Narsil.Types`):
+**Fact types** (from `Narsil.Bash.Types`):
 
 | Constructor | Meaning | Example |
 |---|---|---|
@@ -126,7 +126,7 @@ A typed flag database for 21 shell builtins (`echo`, `printf`, `test`, `read`, `
 
 This database allows the fact extractor to distinguish between bare commands that are shell builtins (safe) and bare external commands (policy violation).
 
-### Step 5: Constraint Generation — `Narsil.Infer.Constraint`
+### Step 5: Constraint Generation — `Narsil.Inference.Nix.Constraint`
 
 ```haskell
 factsToConstraints :: [Fact] -> [Constraint]
@@ -152,7 +152,7 @@ data Constraint = Type :~: Type
 | `UsesStorePath` | No constraint (informational) |
 | `BareCommand` / `DynamicCommand` | No constraint (policy violations reported separately) |
 
-### Step 6: Unification — `Narsil.Infer.Unify`
+### Step 6: Unification — `Narsil.Inference.Nix.Unify`
 
 ```haskell
 solve :: [Constraint] -> Either UnifyError Subst
@@ -165,7 +165,7 @@ First-order unification over simple types (`TInt`, `TString`, `TBool`, `TPath`, 
 
 The substitution (`Subst = Map TypeVar Type`) maps type variables to concrete types. After unification succeeds, all facts have resolved types.
 
-### Step 7: Schema Construction — `Narsil.Schema.Build`
+### Step 7: Schema Construction — `Narsil.Inference.Bash.Schema`
 
 ```haskell
 buildSchema :: [Fact] -> Subst -> Schema
@@ -222,7 +222,7 @@ Each violation maps to an `ALEPH-Bxxx` error code (B001–B004). Violations are 
 
 **Goal:** Given a Nix expression, infer the type of every binding (name → `NixType`) using full Hindley-Milner type inference with row polymorphism and let-polymorphism.
 
-### Type System — `Narsil.Nix.Types`
+### Type System — `Narsil.Inference.Nix.Type`
 
 ```haskell
 data NixType
@@ -250,7 +250,7 @@ data Scheme = Forall [TypeVar] NixType  -- polymorphic type scheme
 - **String literals** (`TStrLit`) distinguish literal strings from general `TString` — useful for tracking known strings vs interpolated ones, especially for bash extraction.
 - **`__functor` support** — when a function type is unified against an attribute set type, the system checks for a `__functor` field in the record and follows the protocol chain. This models Nix's "callable attribute sets."
 
-### Type Substitution — `Narsil.Nix.Types`
+### Type Substitution — `Narsil.Inference.Nix.Type`
 
 ```haskell
 type Subst = Map TypeVar NixType
@@ -266,7 +266,7 @@ freeTypeVarsScheme :: Scheme -> Set TypeVar
 
 Standard environment-based substitution with occurs check. Composition is left-biased: `composeSubst s1 s2` applies `s1` to the values in `s2`, then unions — effectively `s1 ∘ s2`.
 
-### Inference Engine — `Narsil.Nix.Inference`
+### Inference Engine — `Narsil.Inference.Nix`
 
 ```haskell
 inferExpr :: NExprLoc -> Either Text (NixType, [Binding])
@@ -338,7 +338,7 @@ When `inferAppWithImport` detects an `import ./path` application whose path matc
 
 The builtin environment defines types for all standard Nix primitives: string/path conversions (`toString`, `baseNameOf`, `dirOf`), list operations (`head`, `tail`, `map`, `filter`, `foldl'`), attrset introspection (`attrNames`, `attrValues`, `hasAttr`, `getAttr`), type predicates (`isNull`, `isInt`, `isString`, etc.), arithmetic (`add`, `sub`, `mul`, `div`), file I/O (`readFile`, `import`, `toPath`), control flow (`throw`, `abort`, `trace`, `tryEval`), and `derivation` (typed as taking `TAttrsOpen` → `TDerivation`).
 
-### Nix Linting — `Narsil.Nix.Lint`
+### Nix Linting — `Narsil.Lint.Nix`
 
 ```haskell
 findNixViolations :: NExprLoc -> [NixViolation]
@@ -354,7 +354,7 @@ Detects problematic Nix patterns:
 - `VWriteShellScript` (ALEPH-N011) — `writeShellScript` (prefer `writeShellApplication`)
 - `VLongInlineString n` (ALEPH-N012) — inline strings exceeding a length threshold
 
-### Combined Linting — `Narsil.Nix.LintCombined`
+### Combined Linting — `Narsil.Lint.Combined`
 
 ```haskell
 data LintBundle = LintBundle
@@ -368,7 +368,7 @@ combinedLint :: FilePath -> NExprLoc -> LintBundle
 
 Runs all lint passes in one call. Used by the CLI `check` command and the LSP diagnostics engine.
 
-### Derivation Linting — `Narsil.Nix.LintDerivation`
+### Derivation Linting — `Narsil.Lint.Derivation`
 
 ```haskell
 findDerivViolations :: FilePath -> NExprLoc -> [DerivViolation]
@@ -378,7 +378,7 @@ Checks `mkDerivation` calls for:
 - `VMissingMeta` — derivation without `meta` attribute
 - `VMissingDescription` — `meta` set without `description` key
 
-### Pattern Linting — `Narsil.Nix.LintPatterns`
+### Pattern Linting — `Narsil.Lint.Patterns`
 
 ```haskell
 findPatternViolations :: NExprLoc -> [PatternViolation]
@@ -388,7 +388,7 @@ Checks for anti-patterns in Nix code:
 - `VOrNullFallback` — `or null` pattern (use `if foo != null then foo else default`)
 - `VAttrTranslation` — `lib.attrsets.translateAttrs` outside of prelude code
 
-### Package Directory Linting — `Narsil.Nix.LintPackages`
+### Package Directory Linting — `Narsil.Lint.Packages`
 
 ```haskell
 checkPackageDirs :: [FilePath] -> IO [PackageViolation]
@@ -396,11 +396,11 @@ checkPackageDirs :: [FilePath] -> IO [PackageViolation]
 
 Ensures every directory under a packages root contains a `default.nix` file (ALEPH-P001).
 
-### Nix Parse / Bash Extraction — `Narsil.Nix.Parse`
+### Nix Parse / Bash Extraction — `Narsil.Syntax.Parse`
 
 See [Nix-to-Bash Bridge](#nix-to-bash-bridge) below.
 
-### Module Kind — `Narsil.Nix.ModuleKind`
+### Module Kind — `Narsil.Layout.ModuleKind`
 
 ```haskell
 data ModuleKind = Flake | FlakeModule | NixOSModule | HomeModule
@@ -409,7 +409,7 @@ data ModuleKind = Flake | FlakeModule | NixOSModule | HomeModule
 
 Classification enum used by both the layout convention system and the module graph builder.
 
-### Nix Naming — `Narsil.Nix.Naming`
+### Nix Naming — `Narsil.Layout.Naming`
 
 Validation utilities for naming conventions (kebab-case, snake_case, camelCase, PascalCase) used by the layout convention system.
 
@@ -417,7 +417,7 @@ Validation utilities for naming conventions (kebab-case, snake_case, camelCase, 
 
 ## Nix-to-Bash Bridge
 
-**Module:** `Narsil.Nix.Parse`
+**Module:** `Narsil.Syntax.Parse`
 
 The bridge extracts bash source text from Nix files and feeds it through Pipeline A. It recognizes the following Nix function calls as shell-script producers:
 
@@ -453,7 +453,7 @@ Input: Nix file path
 
 ## Module Graph Builder
 
-**Module:** `Narsil.Nix.Module`
+**Module:** `Narsil.Layout.Graph`
 
 The module graph builder analyzes multi-file Nix projects by walking `import` statements from a root file (typically `flake.nix`), constructing a dependency graph with topological ordering, and running type inference across all modules with cross-module type propagation.
 
@@ -524,7 +524,7 @@ hasViolations :: ModuleGraph -> Bool                       -- any failures?
 totalViolationCount :: ModuleGraph -> Int                  -- aggregate count
 ```
 
-### Module System Extraction — `Narsil.Nix.ModuleSystem`
+### Module System Extraction — `Narsil.Layout.ModuleSystem`
 
 ```haskell
 extractOptions :: NExprLoc -> Map Text OptionInfo
@@ -542,7 +542,7 @@ Used by the LSP hover handler to show option documentation.
 
 ## Scope Graphs
 
-**Module:** `Narsil.Nix.Scope`
+**Module:** `Narsil.Layout.Scope`
 
 The scope graph subsystem follows the Visser-style scope graph formalism for name binding analysis. It constructs directed graphs where scopes are nodes connected by labeled edges, enabling IDE features like go-to-definition, find-references, and rename.
 
@@ -667,9 +667,9 @@ The `fullLint` function runs four diagnostic passes in sequence:
 
 | Pass | Lint Target | Module |
 |---|---|---|
-| `nixVios'` | General Nix lint (`rec`, `with`, raw mkDerivation, etc.) | `Narsil.Nix.Lint` |
-| `derivVios'` | Derivation quality (`meta`, `description`) | `Narsil.Nix.LintDerivation` |
-| `patternVios'` | Anti-patterns (`or null`, translateAttrs) | `Narsil.Nix.LintPatterns` |
+| `nixVios'` | General Nix lint (`rec`, `with`, raw mkDerivation, etc.) | `Narsil.Lint.Nix` |
+| `derivVios'` | Derivation quality (`meta`, `description`) | `Narsil.Lint.Derivation` |
+| `patternVios'` | Anti-patterns (`or null`, translateAttrs) | `Narsil.Lint.Patterns` |
 | `embeddedBashDiags` | Forbidden bash constructs in embedded scripts | `Narsil.Lint.Forbidden` |
 
 Diagnostics are published on every document open, change, and save event. On save and open, `voidProjectDiags` fires an async task (`async`) to run project-wide diagnostics via `buildModuleGraph`, but results are currently not published (WIP).
@@ -678,7 +678,7 @@ Diagnostics are published on every document open, change, and save event. On sav
 
 **Hover** (`hoverHandler`):
 - Type-inference at cursor via `inferExprAtWithEnv`
-- Option documentation integration via `inferOptionAtPath` from `Narsil.Nix.ModuleSystem`
+- Option documentation integration via `inferOptionAtPath` from `Narsil.Layout.ModuleSystem`
 - Cross-module type env built via `buildCrossEnv` (walks project root → flake.nix → module graph)
 
 **Definition** (`definitionHandler`):
@@ -745,13 +745,13 @@ Two helpers build project-wide data structures on demand:
 
 ## Formatter (vendored nixfmt)
 
-**Module:** `Narsil.Nix.Formatter`
+**Module:** `Narsil.Syntax.Format`
 
 The `fmt` command reformats Nix source. The formatter is meaning-preserving and produces byte-for-byte the same output as the upstream `nixfmt` binary.
 
 ### Design
 
-There is no hand-rolled pretty-printer. `Narsil.Nix.Formatter` delegates to a **deep-vendored copy of nixfmt 1.3.1** (RFC 166), whose source lives under `vendor/nixfmt/` (MPL-2.0; see `vendor/nixfmt/LICENSE`) and is built as a private cabal sub-library, `nixfmt-vendored`. nixfmt re-parses the source with its own parser — its layout depends on comment/trivia attached to tokens, which hnix discards — so the already-parsed `NExprLoc` is *unused* by the formatter; the caller still parses with hnix first only to run the safety/depth gate.
+There is no hand-rolled pretty-printer. `Narsil.Syntax.Format` delegates to a **deep-vendored copy of nixfmt 1.3.1** (RFC 166), whose source lives under `vendor/nixfmt/` (MPL-2.0; see `vendor/nixfmt/LICENSE`) and is built as a private cabal sub-library, `nixfmt-vendored`. nixfmt re-parses the source with its own parser — its layout depends on comment/trivia attached to tokens, which hnix discards — so the already-parsed `NExprLoc` is *unused* by the formatter; the caller still parses with hnix first only to run the safety/depth gate.
 
 Both entry points call:
 
@@ -772,15 +772,15 @@ formatNixFile :: Text -> FilePath -> NExprLoc -> Text  -- format file (path used
 
 Byte-exact parity with the `nixfmt` binary is enforced by the `tools/fmtparity/check.sh` harness (curated 14/14, real fixtures 48/48). The vendored modules (`Nixfmt`, `Nixfmt.Lexer`, `Nixfmt.Parser`, `Nixfmt.Predoc`, `Nixfmt.Pretty`, `Nixfmt.Types`, `Nixfmt.Util`, …) are first-class code in our tree: they build under our `-Wall -Werror` flags, and we own them — divergence happens by editing `vendor/nixfmt/Nixfmt/Pretty.hs` etc. directly (those edits remain MPL-2.0).
 
-> The `prettyprinter` / `prettyprinter-ansi-terminal` libraries are still dependencies, but only for `Narsil.Pretty` (terminal-colored CLI output) — not for the formatter.
+> The `prettyprinter` / `prettyprinter-ansi-terminal` libraries are still dependencies, but only for `Narsil.Syntax.Pretty` (terminal-colored CLI output) — not for the formatter.
 
 ---
 
 ## Type-Annotated Output
 
-**Module:** `Narsil.Nix.Infer`
+**Module:** `Narsil.Inference.Nix`
 
-The `infer` command runs the inference engine over a Nix file and injects inferred types back into the source as `# :: <type>` comments. (`Narsil.Nix.Infer` is the *command renderer*; the inference *engine* it calls is `Narsil.Nix.Inference`.)
+The `infer` command runs the inference engine over a Nix file and injects inferred types back into the source as `# :: <type>` comments. (`Narsil.Inference.Nix` is the *command renderer*; the inference *engine* it calls is `Narsil.Inference.Nix`.)
 
 ### Pipeline
 
@@ -806,15 +806,15 @@ annotateSource      :: Text -> InferResult -> Text                    -- low-lev
 3. Sorts annotations by location (reverse line order) so that insertions don't invalidate subsequent positions
 4. Inserts each annotation on the line before the declaration, preserving the original indentation
 
-Type values are rendered by `prettyType` / `prettyScheme` from `Narsil.Nix.Types` (union types as `a | b | c`, function types right-associative `a -> b`, string literals quoted).
+Type values are rendered by `prettyType` / `prettyScheme` from `Narsil.Inference.Nix.Type` (union types as `a | b | c`, function types right-associative `a -> b`, string literals quoted).
 
 ---
 
 ## Layout Conventions
 
-**Modules:** `Narsil.Nix.LayoutConvention`, `Narsil.Nix.Layout`, `Narsil.Nix.ModuleKind`, `Narsil.Nix.Naming`
+**Modules:** `Narsil.Layout.Convention`, `Narsil.Layout.Convention`, `Narsil.Layout.ModuleKind`, `Narsil.Layout.Naming`
 
-### Convention Definition — `Narsil.Nix.LayoutConvention`
+### Convention Definition — `Narsil.Layout.Convention`
 
 The layout convention system enforces structural constraints on project organization. A `Convention` defines:
 
@@ -869,7 +869,7 @@ data NamingConvention = KebabCase | SnakeCase | CamelCase | PascalCase | NoNamin
 - `E006` — not a flake module (when required)
 - `E007` — missing required export
 
-### Layout Violation Checking — `Narsil.Nix.Layout`
+### Layout Violation Checking — `Narsil.Layout.Convention`
 
 Operates independently of the convention system for historical compatibility:
 
@@ -887,13 +887,13 @@ Checks:
 
 ### Integration with Module Graph
 
-The module graph builder (`Narsil.Nix.Module`) calls `findLayoutViolations` on each parsed file during `buildModules`, accumulating results in `LayoutFailure` and making them available through `hasViolations` and `totalViolationCount`.
+The module graph builder (`Narsil.Layout.Graph`) calls `findLayoutViolations` on each parsed file during `buildModules`, accumulating results in `LayoutFailure` and making them available through `hasViolations` and `totalViolationCount`.
 
 ---
 
 ## Effect Algebra
 
-**Module:** `Narsil.Nix.Effect`
+**Module:** `Narsil.Syntax.Effect`
 
 Models Nix overlays using a coeffect-effect calculus, tracking what each overlay requires and produces.
 
@@ -932,7 +932,7 @@ The algebra is complete and tested; integration with actual Nix overlay analysis
 
 ## Configuration System
 
-**Module:** `Narsil.Config`
+**Module:** `Narsil.Core.Config`
 
 Configuration is loaded from Dhall files (default: `.narsil.dhall`) using the `dhall` library's auto-derivation via generics.
 
@@ -993,10 +993,10 @@ Each lint module defines violation types that are mapped to text rule IDs:
 | Domain | Module | Rule IDs |
 |---|---|---|
 | Bash forbidden | `Narsil.Lint.Forbidden` | `no-heredoc-in-inline-bash`, `no-eval`, `no-backtick` |
-| Nix lint | `Narsil.Nix.Lint` | `with-lib`, `rec-anywhere`, `no-substitute-all`, `no-raw-mkderivation`, etc. |
-| Derivation lint | `Narsil.Nix.LintDerivation` | `missing-meta`, `missing-description` |
-| Package lint | `Narsil.Nix.LintPackages` | `default-nix-in-packages` |
-| Pattern lint | `Narsil.Nix.LintPatterns` | `or-null-fallback`, `no-translate-attrs-outside-prelude` |
+| Nix lint | `Narsil.Lint.Nix` | `with-lib`, `rec-anywhere`, `no-substitute-all`, `no-raw-mkderivation`, etc. |
+| Derivation lint | `Narsil.Lint.Derivation` | `missing-meta`, `missing-description` |
+| Package lint | `Narsil.Lint.Packages` | `default-nix-in-packages` |
+| Pattern lint | `Narsil.Lint.Patterns` | `or-null-fallback`, `no-translate-attrs-outside-prelude` |
 | Type checking | (built-in) | `type-check-failure` |
 
 The CLI `check` command and LSP diagnostics both consult these mappings to determine which violations are suppressed.
@@ -1030,8 +1030,8 @@ main = runLog InfoS $ do
 | Command | Handler | Description |
 |---|---|---|
 | `narsil check <path>` | `cmdCheck` | Auto-detect: directories run CI mode, `.nix` files run Nix check, others run bash check |
-| `narsil fmt <file.nix>` | `cmdFmt` | Reformat via `Narsil.Nix.Formatter` (delegates to vendored nixfmt) |
-| `narsil infer <file.nix>` | `cmdInfer` | Type-infer then inject `# :: <type>` annotations via `Narsil.Nix.Infer` |
+| `narsil fmt <file.nix>` | `cmdFmt` | Reformat via `Narsil.Syntax.Format` (delegates to vendored nixfmt) |
+| `narsil infer <file.nix>` | `cmdInfer` | Type-infer then inject `# :: <type>` annotations via `Narsil.Inference.Nix` |
 | `narsil emit <script.sh>` | `cmdEmit` | Parse bash, build schema, emit `emit_config()` function via `Narsil.Emit.Config` |
 | `narsil lsp` | `cmdLSP` | Start LSP server via `Narsil.LSP.Server.run` |
 | `narsil scope <file.nix>` | `cmdScope` | Build scope graph, pretty-print to terminal |
@@ -1101,7 +1101,7 @@ reportPatternViolations :: FilePath -> [PatternViolation] -> AppM ()
 
 Each reporter formats violations with source locations, error codes (ALEPH-*), and contextual messages. Bare commands produce `ALEPH-B005`, dynamic commands produce `ALEPH-B006`.
 
-### Logging — `Narsil.Log`
+### Logging — `Narsil.Core.Log`
 
 ```haskell
 type AppM = KatipContextT IO
@@ -1112,7 +1112,7 @@ All CLI commands run in `AppM` (Katip context monad) with structured logging. `r
 
 ---
 
-## Search & Documentation — `Narsil.Docs`
+## Search & Documentation — `Narsil.Docs.Extract`
 
 Three modules provide documentation extraction and search:
 
@@ -1130,13 +1130,13 @@ The following diagrams show the import relationships between modules, organized 
 
 ```
 Narsil
-├── Narsil.Types              (re-exported)
-├── Narsil.Config             (Config type + loadConfig + rule queries)
+├── Narsil.Bash.Types              (re-exported)
+├── Narsil.Core.Config             (Config type + loadConfig + rule queries)
 ├── Narsil.Bash.Parse         (parseBash)
 ├── Narsil.Bash.Facts         (extractFacts)
-├── Narsil.Infer.Constraint   (factsToConstraints)
-├── Narsil.Infer.Unify        (solve)
-└── Narsil.Schema.Build       (buildSchema, validateConfigPaths)
+├── Narsil.Inference.Nix.Constraint   (factsToConstraints)
+├── Narsil.Inference.Nix.Unify        (solve)
+└── Narsil.Inference.Bash.Schema       (buildSchema, validateConfigPaths)
 ```
 
 ### Bash Subsystem
@@ -1146,70 +1146,70 @@ Narsil.Bash.Parse ────────► ShellCheck (external)
 Narsil.Bash.Patterns ─────► Narsil.Bash.Facts
 Narsil.Bash.Facts ────────► Narsil.Bash.Patterns
                               ├─ Narsil.Bash.Parse
-                              └─ Narsil.Types (Fact, Literal, Span)
+                              └─ Narsil.Bash.Types (Fact, Literal, Span)
 
 Narsil.Bash.Builtins ─────► Narsil.Bash.Facts
 
-Narsil.Infer.Constraint ──► Narsil.Types (Constraint, Fact)
-Narsil.Infer.Unify ───────► Narsil.Types (Subst, Type, TypeVar)
-Narsil.Schema.Build ──────► Narsil.Types (Schema, Fact, Subst)
-Narsil.Emit.Config ───────► Narsil.Types (Schema)
+Narsil.Inference.Nix.Constraint ──► Narsil.Bash.Types (Constraint, Fact)
+Narsil.Inference.Nix.Unify ───────► Narsil.Bash.Types (Subst, Type, TypeVar)
+Narsil.Inference.Bash.Schema ──────► Narsil.Bash.Types (Schema, Fact, Subst)
+Narsil.Emit.Config ───────► Narsil.Bash.Types (Schema)
 Narsil.Lint.Forbidden ────► Narsil.Bash.Parse
 ```
 
 ### Nix Subsystem
 
 ```
-Narsil.Nix.Types ────────── (NixType, RowTail, Scheme, Subst, type helpers)
-Narsil.Nix.Inference        (the HM inference engine)
-├── Narsil.Nix.Types
-├── Narsil.Nix.Utils
+Narsil.Inference.Nix.Type ────────── (NixType, RowTail, Scheme, Subst, type helpers)
+Narsil.Inference.Nix        (the HM inference engine)
+├── Narsil.Inference.Nix.Type
+├── Narsil.Syntax.Annotation
 ├── hnix (Expr.Types, Expr.Types.Annotated, Parser, Utils)
-└── Narsil.Types (Span, Loc)
+└── Narsil.Bash.Types (Span, Loc)
 
-Narsil.Nix.Infer            (the `infer` command renderer)
-├── Narsil.Nix.Inference (Binding, InferResult, inferExprWithEnv, builtinEnv)
-├── Narsil.Nix.Parse
-├── Narsil.Nix.Types (prettyType)
-└── Narsil.Safety
+Narsil.Inference.Nix            (the `infer` command renderer)
+├── Narsil.Inference.Nix (Binding, InferResult, inferExprWithEnv, builtinEnv)
+├── Narsil.Syntax.Parse
+├── Narsil.Inference.Nix.Type (prettyType)
+└── Narsil.Core.Safety
 
-Narsil.Nix.Parse
-├── Narsil.Nix.Utils
-├── Narsil.Types
+Narsil.Syntax.Parse
+├── Narsil.Syntax.Annotation
+├── Narsil.Bash.Types
 └── hnix (Parser, Expr.Types, Utils)
 
-Narsil.Nix.Lint ─────────── Narsil.Nix.Utils
-Narsil.Nix.LintDerivation ── Narsil.Nix.Utils
-Narsil.Nix.LintPatterns ── Narsil.Nix.Utils + .Nix.Types
-Narsil.Nix.LintPackages ── Narsil.Nix.Utils
-Narsil.Nix.LintCombined ─── .Nix.Lint + .Nix.LintDerivation + .Nix.LintPatterns
+Narsil.Lint.Nix ─────────── Narsil.Syntax.Annotation
+Narsil.Lint.Derivation ── Narsil.Syntax.Annotation
+Narsil.Lint.Patterns ── Narsil.Syntax.Annotation + .Nix.Types
+Narsil.Lint.Packages ── Narsil.Syntax.Annotation
+Narsil.Lint.Combined ─── .Nix.Lint + .Nix.LintDerivation + .Nix.LintPatterns
 
-Narsil.Nix.Module
-├── Narsil.Nix.Inference (inferExpr, inferExprWithEnv, builtinEnv, extendImport)
-├── Narsil.Nix.Lint (findNixViolations)
-├── Narsil.Nix.Layout (findLayoutViolations)
-├── Narsil.Nix.Types
-├── Narsil.Types (Loc, Span)
+Narsil.Layout.Graph
+├── Narsil.Inference.Nix (inferExpr, inferExprWithEnv, builtinEnv, extendImport)
+├── Narsil.Lint.Nix (findNixViolations)
+├── Narsil.Layout.Convention (findLayoutViolations)
+├── Narsil.Inference.Nix.Type
+├── Narsil.Bash.Types (Loc, Span)
 └── hnix (Parser, Expr.Types)
 
-Narsil.Nix.ModuleSystem
-├── Narsil.Nix.Types
+Narsil.Layout.ModuleSystem
+├── Narsil.Inference.Nix.Type
 └── hnix
 
-Narsil.Nix.Flake ────────── Narsil.Nix.Module
-Narsil.Nix.Scope
+Narsil.Layout.Import ────────── Narsil.Layout.Graph
+Narsil.Layout.Scope
 ├── hnix (Expr.Types, Expr.Types.Annotated, Utils)
 ├── aeson (ToJSON)
 └── dhall (ToDhall, inject)
 
-Narsil.Nix.Layout ───────── hnix + Narsil.Types
-Narsil.Nix.LayoutConvention ─ Narsil.Nix.ModuleKind + .Nix.Naming
-Narsil.Nix.ModuleKind ───── (standalone, used by LayoutConvention + Module)
-Narsil.Nix.Naming ───────── (standalone, used by LayoutConvention)
-Narsil.Nix.Effect ───────── Narsil.Nix.Types
-Narsil.Nix.Formatter ────── nixfmt-vendored (Nixfmt, Nixfmt.Predoc) + hnix (NExprLoc)
-Narsil.Nix.Infer ────────── Narsil.Nix.Inference + .Nix.Parse + .Nix.Types + .Safety
-Narsil.Nix.Utils ───────── Narsil.Types + hnix
+Narsil.Layout.Convention ───────── hnix + Narsil.Bash.Types
+Narsil.Layout.Convention ─ Narsil.Layout.ModuleKind + .Nix.Naming
+Narsil.Layout.ModuleKind ───── (standalone, used by LayoutConvention + Module)
+Narsil.Layout.Naming ───────── (standalone, used by LayoutConvention)
+Narsil.Syntax.Effect ───────── Narsil.Inference.Nix.Type
+Narsil.Syntax.Format ────── nixfmt-vendored (Nixfmt, Nixfmt.Predoc) + hnix (NExprLoc)
+Narsil.Inference.Nix ────────── Narsil.Inference.Nix + .Nix.Parse + .Nix.Types + .Safety
+Narsil.Syntax.Annotation ───────── Narsil.Bash.Types + hnix
 ```
 
 ### LSP Subsystem
@@ -1224,16 +1224,16 @@ Narsil.LSP.Handlers
 ├── Language.LSP.Server
 ├── Narsil.Bash.Parse (parseBash)
 ├── Narsil.Lint.Forbidden
-├── Narsil.Nix.Inference (inferExprWithEnv, builtinEnv, extendImport, TypeEnv)
-├── Narsil.Nix.Lint (findNixViolations)
-├── Narsil.Nix.LintDerivation
-├── Narsil.Nix.LintPatterns
-├── Narsil.Nix.Module (buildModuleGraph, mgModuleTypes)
-├── Narsil.Nix.ModuleSystem (extractOptions)
-├── Narsil.Nix.Parse (findShellScriptCalls, extractString)
-├── Narsil.Nix.Scope (fromModuleGraph, fromNixExpr, resolve, resolveAll, findReferences)
-├── Narsil.Nix.Types
-└── Narsil.Nix.Utils
+├── Narsil.Inference.Nix (inferExprWithEnv, builtinEnv, extendImport, TypeEnv)
+├── Narsil.Lint.Nix (findNixViolations)
+├── Narsil.Lint.Derivation
+├── Narsil.Lint.Patterns
+├── Narsil.Layout.Graph (buildModuleGraph, mgModuleTypes)
+├── Narsil.Layout.ModuleSystem (extractOptions)
+├── Narsil.Syntax.Parse (findShellScriptCalls, extractString)
+├── Narsil.Layout.Scope (fromModuleGraph, fromNixExpr, resolve, resolveAll, findReferences)
+├── Narsil.Inference.Nix.Type
+└── Narsil.Syntax.Annotation
 ```
 
 ### CLI Subsystem
@@ -1247,52 +1247,52 @@ Narsil.CLI.Dispatch
 ├── Narsil.CLI.CI (cmdCI)
 ├── Narsil.Emit.Config (emitConfigFunction)
 ├── Narsil.LSP.Server (run)
-├── Narsil.Nix.Infer (annotateFile)
-├── Narsil.Nix.Formatter (formatNixFile)
-├── Narsil.Nix.Parse (parseNixFile)
-└── Narsil.Nix.Scope (fromNixFile, toDhall, toJSON)
+├── Narsil.Inference.Nix (annotateFile)
+├── Narsil.Syntax.Format (formatNixFile)
+├── Narsil.Syntax.Parse (parseNixFile)
+└── Narsil.Layout.Scope (fromNixFile, toDhall, toJSON)
 
 Narsil.CLI.Bash
 ├── Narsil.Bash.Facts (extractFacts)
 ├── Narsil.Bash.Parse (parseBash)
 ├── Narsil.CLI.Check
 ├── Narsil.CLI.Report
-├── Narsil.Infer.Constraint (factsToConstraints)
-├── Narsil.Infer.Unify (solve)
+├── Narsil.Inference.Nix.Constraint (factsToConstraints)
+├── Narsil.Inference.Nix.Unify (solve)
 ├── Narsil.Lint.Forbidden (findViolations)
-├── Narsil.Nix.Parse (extractBashScripts)
-└── Narsil.Schema.Build (validateConfigPaths)
+├── Narsil.Syntax.Parse (extractBashScripts)
+└── Narsil.Inference.Bash.Schema (validateConfigPaths)
 
 Narsil.CLI.Check
 ├── Narsil.CLI.Report (report*)
-├── Narsil.Nix.Inference (inferExpr)
-├── Narsil.Nix.LintCombined (combinedLint)
-├── Narsil.Nix.Parse (parseNixFile)
-└── Narsil.Nix.Types (prettyType)
+├── Narsil.Inference.Nix (inferExpr)
+├── Narsil.Lint.Combined (combinedLint)
+├── Narsil.Syntax.Parse (parseNixFile)
+└── Narsil.Inference.Nix.Type (prettyType)
 
 Narsil.CLI.CI
 ├── Narsil.CLI.Bash (parseNixFiles, checkScript)
 ├── Narsil.CLI.Check (checkFile)
 ├── Narsil.CLI.Report (report*)
-├── Narsil.Nix.Lint (formatNixViolations)
-├── Narsil.Nix.LintPackages (checkPackageDirs)
-└── Narsil.Nix.Module (buildModuleGraphFromFlake)
+├── Narsil.Lint.Nix (formatNixViolations)
+├── Narsil.Lint.Packages (checkPackageDirs)
+└── Narsil.Layout.Graph (buildModuleGraphFromFlake)
 ```
 
 ### Cross-Cutting Dependencies
 
 ```
-Narsil.Types ◄─── Narsil (entire project)
-Narsil.Config ─── Narsil.Lint.Forbidden + .Nix.Lint + .Nix.LintDerivation
+Narsil.Bash.Types ◄─── Narsil (entire project)
+Narsil.Core.Config ─── Narsil.Lint.Forbidden + .Nix.Lint + .Nix.LintDerivation
                          + .Nix.LintPackages + .Nix.LintPatterns
-Narsil.Log ────── CLI layer (all CLI modules)
+Narsil.Core.Log ────── CLI layer (all CLI modules)
 ```
 
 **Key dependency rules:**
-- `Narsil.Types` is the foundation — no other internal dependencies
-- `Narsil.Nix.Types` depends only on `base`, `containers`, `text`, `hnix`
-- `Narsil.Nix.Inference` (the HM engine) depends on `Narsil.Nix.Types` and `Narsil.Types`; `Narsil.Nix.Infer` (the `infer` command) sits on top of it
-- `Narsil.Config` depends on six lint modules (for rule ID mappings)
+- `Narsil.Bash.Types` is the foundation — no other internal dependencies
+- `Narsil.Inference.Nix.Type` depends only on `base`, `containers`, `text`, `hnix`
+- `Narsil.Inference.Nix` (the HM engine) depends on `Narsil.Inference.Nix.Type` and `Narsil.Bash.Types`; `Narsil.Inference.Nix` (the `infer` command) sits on top of it
+- `Narsil.Core.Config` depends on six lint modules (for rule ID mappings)
 - The LSP module (`Narsil.LSP.Handlers`) is the most connected leaf, importing from 14+ internal modules
 
 ---
@@ -1317,7 +1317,7 @@ Narsil.Log ────── CLI layer (all CLI modules)
 | LSP | `lsp >= 2.7 && < 2.8`, `lsp-types >= 2.3 && < 2.4` |
 | Logging | `katip >= 0.8 && < 0.9` |
 | Formatting | `nixfmt-vendored` (private sub-library; deep-vendored nixfmt 1.3.1) |
-| Terminal pretty-printing | `prettyprinter >= 1.7 && < 1.8`, `prettyprinter-ansi-terminal >= 1.1 && < 1.2` (used only by `Narsil.Pretty`) |
+| Terminal pretty-printing | `prettyprinter >= 1.7 && < 1.8`, `prettyprinter-ansi-terminal >= 1.1 && < 1.2` (used only by `Narsil.Syntax.Pretty`) |
 | Serialization | `aeson >= 2.0 && < 2.3` |
 | Parsing (CLI) | `megaparsec >= 9.0 && < 10.0` |
 | Data structures | `containers >= 0.6 && < 0.8`, `data-fix >= 0.3 && < 0.4` |
