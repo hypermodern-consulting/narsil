@@ -1259,7 +1259,10 @@ inferBindings recursive environment bindings
  where
   -- recovery seam: the failed binding's fields stay PRESENT (dynamic), so
   -- the record does not also manufacture missing-field errors downstream
-  one b = recoverWith [(n, TAny) | (n, _, _) <- parseBinding b] (inferNonRecursiveBinding environment b)
+  one b =
+    recoverWith
+      [(n, TAny) | (n, _, _) <- parseBinding b]
+      (inferNonRecursiveBinding environment b)
 
 {- | Desugar nested-path bindings into top-level bindings whose value is a
 synthesised attrset. Closes S5 from review-2: previously @{ a.b = 1; }@ was
