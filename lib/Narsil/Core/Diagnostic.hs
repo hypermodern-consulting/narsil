@@ -70,7 +70,7 @@ severity colour (selective styling, like rustc — not a single flat colour). Wi
 @color@ off the output is plain (and byte-identical to the golden test), e.g.
 
 @
-error[ALEPH-N001]: `with` expression is not allowed
+error[NARSIL-N001]: `with` expression is not allowed
   --> flake.nix:90:7
    |
 90 |   with pkgs; [ git ];

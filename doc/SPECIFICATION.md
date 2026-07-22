@@ -203,24 +203,24 @@ These constructs are **unconditionally banned**. No escape hatch. No configurati
 
 | Construct | Reason | Error Code |
 |-----------|--------|------------|
-| Heredocs (`<<`, `<<-`) | Unparseable interpolation | ALEPH-B001 |
-| Here-strings (`<<<`) | Unparseable interpolation | ALEPH-B002 |
-| `eval` | Dynamic code execution | ALEPH-B003 |
-| Backticks (`` `cmd` ``) | Deprecated, use `$(cmd)` | ALEPH-B004 |
-| Bare commands | Must use store paths | ALEPH-B005 |
-| Dynamic commands (`$cmd`) | Cannot analyze statically | ALEPH-B006 |
+| Heredocs (`<<`, `<<-`) | Unparseable interpolation | NARSIL-B001 |
+| Here-strings (`<<<`) | Unparseable interpolation | NARSIL-B002 |
+| `eval` | Dynamic code execution | NARSIL-B003 |
+| Backticks (`` `cmd` ``) | Deprecated, use `$(cmd)` | NARSIL-B004 |
+| Bare commands | Must use store paths | NARSIL-B005 |
+| Dynamic commands (`$cmd`) | Cannot analyze statically | NARSIL-B006 |
 
 ### 3.2 Nix Forbidden
 
 | Construct | Reason | Error Code |
 |-----------|--------|------------|
-| `with expr;` | Obscures scope, breaks tooling | ALEPH-N001 |
-| `rec { }` | Enables non-termination | ALEPH-N002 |
+| `with expr;` | Obscures scope, breaks tooling | NARSIL-N001 |
+| `rec { }` | Enables non-termination | NARSIL-N002 |
 
 ### 3.3 Error Reporting
 
 Errors MUST include:
-- Error code (e.g., ALEPH-B001)
+- Error code (e.g., NARSIL-B001)
 - Human-readable message
 - Source location
   - Nix diagnostics: file, line, column (from hnix spans)

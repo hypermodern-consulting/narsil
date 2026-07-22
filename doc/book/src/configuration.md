@@ -52,7 +52,7 @@ from the binary's behavior.
 
 | profile | inherits | character |
 |---|---|---|
-| `strict` | — | Full straylight/aleph conventions: everything error, lisp-case enforced. The house profile — narsil's own repo runs it. |
+| `strict` | — | Full straylight conventions: everything error, lisp-case enforced. The house profile — narsil's own repo runs it. |
 | `standard` | — | The default. Universal bug-catchers on; house-specific rules (prelude wrappers, lisp-case, Dhall templating) off. |
 | `minimal` | — | Essential safety checks only, for gradual adoption. |
 | `nixpkgs` | `standard` | nixpkgs conventions: `with`/`rec` allowed, derivation metadata strictly required, and **`type-check-failure` remapped to Warning** — the lax mode for code adjacent to known upstream issues. |
@@ -71,28 +71,28 @@ Bash (embedded shell scripts):
 
 | Rule ID | Code | What it catches |
 |---|---|---|
-| `no-heredoc-in-inline-bash` | ALEPH-B001/B002 | Heredocs and here-strings |
-| `no-eval` | ALEPH-B003 | `eval` |
-| `no-backtick` | ALEPH-B004 | Backtick command substitution |
-| — | ALEPH-B005 | Bare (non-store-path) commands |
+| `no-heredoc-in-inline-bash` | NARSIL-B001/B002 | Heredocs and here-strings |
+| `no-eval` | NARSIL-B003 | `eval` |
+| `no-backtick` | NARSIL-B004 | Backtick command substitution |
+| — | NARSIL-B005 | Bare (non-store-path) commands |
 
 Nix:
 
 | Rule ID | Code | What it catches |
 |---|---|---|
-| `with-lib` | ALEPH-N001 | `with` expressions |
-| `rec-anywhere` | ALEPH-N002 | `rec` attrsets |
-| `no-substitute-all` | ALEPH-N005 | `substituteAll` |
-| `no-raw-mkderivation` | ALEPH-N006 | Raw `mkDerivation` |
-| `no-raw-runcommand` | ALEPH-N007 | Raw `runCommand` |
-| `no-raw-writeshellapplication` | ALEPH-N008 | Raw `writeShellApplication` |
-| `or-null-fallback` | ALEPH-N009 | `or null` implicit fallback |
-| `no-translate-attrs-outside-prelude` | ALEPH-N010 | Attribute translation outside the prelude |
-| `prefer-write-shell-application` | ALEPH-N011 | `writeShellScript` where an application belongs |
-| `long-inline-string` | ALEPH-N012 | Inline strings > 120 chars |
-| `missing-meta` | ALEPH-N013 | Derivation without `meta` |
-| `missing-description` | ALEPH-N014 | `meta` without `description` |
-| `non-lisp-case` | ALEPH-N015 | Non-lisp-case `let` binding (**opt-in**) |
+| `with-lib` | NARSIL-N001 | `with` expressions |
+| `rec-anywhere` | NARSIL-N002 | `rec` attrsets |
+| `no-substitute-all` | NARSIL-N005 | `substituteAll` |
+| `no-raw-mkderivation` | NARSIL-N006 | Raw `mkDerivation` |
+| `no-raw-runcommand` | NARSIL-N007 | Raw `runCommand` |
+| `no-raw-writeshellapplication` | NARSIL-N008 | Raw `writeShellApplication` |
+| `or-null-fallback` | NARSIL-N009 | `or null` implicit fallback |
+| `no-translate-attrs-outside-prelude` | NARSIL-N010 | Attribute translation outside the prelude |
+| `prefer-write-shell-application` | NARSIL-N011 | `writeShellScript` where an application belongs |
+| `long-inline-string` | NARSIL-N012 | Inline strings > 120 chars |
+| `missing-meta` | NARSIL-N013 | Derivation without `meta` |
+| `missing-description` | NARSIL-N014 | `meta` without `description` |
+| `non-lisp-case` | NARSIL-N015 | Non-lisp-case `let` binding (**opt-in**) |
 | `missing-class` | — | Module missing its `_class` attribute |
 | `default-nix-in-packages` | P001 | Misplaced `default.nix` under `packages/` |
 | `type-check-failure` | — | A type inference error (the product) |

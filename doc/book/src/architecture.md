@@ -214,7 +214,7 @@ Detects forbidden shell constructs (regardless of typing):
 - `VEval` — `eval` usage
 - `VBacktick` — backtick command substitution
 
-Each violation maps to an `ALEPH-Bxxx` error code (B001–B004). Violations are independent of the type inference pipeline and can be checked even if type inference fails.
+Each violation maps to an `NARSIL-Bxxx` error code (B001–B004). Violations are independent of the type inference pipeline and can be checked even if type inference fails.
 
 ---
 
@@ -345,14 +345,14 @@ findNixViolations :: NExprLoc -> [NixViolation]
 ```
 
 Detects problematic Nix patterns:
-- `VWith` (ALEPH-N001) — `with lib;` usage (prefer explicit bindings)
-- `VRec` (ALEPH-N002) — `rec { ... }` usage
-- `VSubstituteAll` (ALEPH-N005) — `builtins.substituteAll`
-- `VRawMkDerivation` (ALEPH-N006) — raw `builtins.derivation` calls (prefer `mkDerivation`)
-- `VRawRunCommand` (ALEPH-N007) — raw `runCommand` calls
-- `VRawWriteShellApplication` (ALEPH-N008) — raw `writeShellApplication`
-- `VWriteShellScript` (ALEPH-N011) — `writeShellScript` (prefer `writeShellApplication`)
-- `VLongInlineString n` (ALEPH-N012) — inline strings exceeding a length threshold
+- `VWith` (NARSIL-N001) — `with lib;` usage (prefer explicit bindings)
+- `VRec` (NARSIL-N002) — `rec { ... }` usage
+- `VSubstituteAll` (NARSIL-N005) — `builtins.substituteAll`
+- `VRawMkDerivation` (NARSIL-N006) — raw `builtins.derivation` calls (prefer `mkDerivation`)
+- `VRawRunCommand` (NARSIL-N007) — raw `runCommand` calls
+- `VRawWriteShellApplication` (NARSIL-N008) — raw `writeShellApplication`
+- `VWriteShellScript` (NARSIL-N011) — `writeShellScript` (prefer `writeShellApplication`)
+- `VLongInlineString n` (NARSIL-N012) — inline strings exceeding a length threshold
 
 ### Combined Linting — `Narsil.Lint.Combined`
 
@@ -394,7 +394,7 @@ Checks for anti-patterns in Nix code:
 checkPackageDirs :: [FilePath] -> IO [PackageViolation]
 ```
 
-Ensures every directory under a packages root contains a `default.nix` file (ALEPH-P001).
+Ensures every directory under a packages root contains a `default.nix` file (NARSIL-P001).
 
 ### Nix Parse / Bash Extraction — `Narsil.Syntax.Parse`
 
@@ -709,11 +709,11 @@ Diagnostics are published on every document open, change, and save event. On sav
 **Code Actions** (`codeActionHandler`):
 - Filters diagnostics overlapping the requested range
 - Maps specific violation codes to suggested quick-fix actions:
-  - ALEPH-N001 (`with`): "Replace `with` by explicit bindings"
-  - ALEPH-N013 (missing meta): "Insert `meta` attribute"
-  - ALEPH-N014 (missing description): "Add description to meta"
-  - ALEPH-N009 (or null): "Replace `or null` by if-then-else"
-  - ALEPH-N011 (writeShellScript): "Use writeShellApplication instead"
+  - NARSIL-N001 (`with`): "Replace `with` by explicit bindings"
+  - NARSIL-N013 (missing meta): "Insert `meta` attribute"
+  - NARSIL-N014 (missing description): "Add description to meta"
+  - NARSIL-N009 (or null): "Replace `or null` by if-then-else"
+  - NARSIL-N011 (writeShellScript): "Use writeShellApplication instead"
 - Actions are all informational (no edits yet — marked preferred for auto-fix UX)
 
 **Document Symbols** (`documentSymbolHandler`):
@@ -847,7 +847,7 @@ data ConventionRule = ConventionRule
 
 | Convention | Description |
 |---|---|
-| `straylight` | The straylight/aleph convention: flat module layout under `nix/` with kebab-case everywhere. Flake modules in `nix/modules/flake/`, NixOS modules in `nix/modules/nixos/`, packages in `nix/packages/`, etc. |
+| `straylight` | The straylight convention: flat module layout under `nix/` with kebab-case everywhere. Flake modules in `nix/modules/flake/`, NixOS modules in `nix/modules/nixos/`, packages in `nix/packages/`, etc. |
 | `nixpkgsByName` | Nixpkgs `pkgs/by-name/` layout with camelCase attribute naming |
 | `flakeParts` | Standard flake-parts layout (`modules/`, `packages/`, `overlays/`) |
 | `nixosConfig` | NixOS system configuration layout (`modules/` or `hosts/`, `users/` or `home/`) |
@@ -1099,7 +1099,7 @@ reportDerivViolations :: FilePath -> [DerivViolation] -> AppM ()
 reportPatternViolations :: FilePath -> [PatternViolation] -> AppM ()
 ```
 
-Each reporter formats violations with source locations, error codes (ALEPH-*), and contextual messages. Bare commands produce `ALEPH-B005`, dynamic commands produce `ALEPH-B006`.
+Each reporter formats violations with source locations, error codes (NARSIL-*), and contextual messages. Bare commands produce `NARSIL-B005`, dynamic commands produce `NARSIL-B006`.
 
 ### Logging — `Narsil.Core.Log`
 

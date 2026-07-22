@@ -398,7 +398,7 @@ prop_overflow_safe =
 
 ## // error // codes
 
-Error codes follow the pattern `ALEPH-BXXX`:
+Error codes follow the pattern `NARSIL-BXXX`:
 
 | Code | Category |
 |------|----------|

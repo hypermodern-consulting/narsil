@@ -15,7 +15,7 @@ cat << EOF > config.json
 EOF
 ```
 
-Problems: heredocs are banned (ALEPH-B001), interpolation is opaque to static analysis, no type checking, unset variables produce malformed output.
+Problems: heredocs are banned (NARSIL-B001), interpolation is opaque to static analysis, no type checking, unset variables produce malformed output.
 
 ## After (emit-config)
 

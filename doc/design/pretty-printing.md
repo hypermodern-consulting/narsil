@@ -135,7 +135,7 @@ emitConfigFunction schema =
 *   `narsil` (Haskell): Unique value prop is **Bash-aware** Nix analysis and type inference.
 
 **Features:**
-*   **Diagnostics**: Real-time reporting of `ALEPH-*` errors (forbidden syntax, type mismatches).
+*   **Diagnostics**: Real-time reporting of `NARSIL-*` errors (forbidden syntax, type mismatches).
 *   **Hover**: Show inferred types for variables (e.g., hover over `${PORT}` -> `TInt`).
 *   **Formatting**: Use the new pretty printer.
 *   **Completion**: Recommend config keys (`config.services...`) based on schema.

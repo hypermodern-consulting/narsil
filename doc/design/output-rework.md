@@ -58,7 +58,7 @@ landing in shippable phases, guarded by `tools/clicheck` + golden tests.
 ```haskell
 data Diagnostic = Diagnostic
   { diagSeverity :: Severity        -- reuse katip's Severity
-  , diagCode     :: Maybe Text      -- "ALEPH-N001", "TYPE", "PARSE", …
+  , diagCode     :: Maybe Text      -- "NARSIL-N001", "TYPE", "PARSE", …
   , diagSpan     :: Maybe Span      -- file:line:col(+range)
   , diagSummary  :: Text            -- one-line headline
   , diagHelp     :: [Text]          -- "= help: …" lines
@@ -72,7 +72,7 @@ All checkers become `… -> [Diagnostic]`; the four formatters collapse into one
 ### Human layout (clippy idiom)
 
 ```
-error[ALEPH-N001]: `with` expression is not allowed
+error[NARSIL-N001]: `with` expression is not allowed
   --> flake.nix:90:7
    |
 90 |   with pkgs; [ git ];

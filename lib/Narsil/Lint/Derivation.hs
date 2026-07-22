@@ -224,8 +224,8 @@ formatDerivLoc span' = maybe loc (\f -> T.pack f <> ":" <> loc) (spanFile span')
   loc = T.pack (show (locLine (spanStart span'))) <> ":" <> T.pack (show (locCol (spanStart span')))
 
 formatDerivErrorCode :: DerivViolationType -> Text
-formatDerivErrorCode VMissingMeta = "ALEPH-N013: missing `meta`"
-formatDerivErrorCode VMissingDescription = "ALEPH-N014: missing `description` in meta"
+formatDerivErrorCode VMissingMeta = "NARSIL-N013: missing `meta`"
+formatDerivErrorCode VMissingDescription = "NARSIL-N014: missing `description` in meta"
 
 formatDerivContext :: DerivViolationType -> Text
 formatDerivContext VMissingMeta = "mkDerivation call without meta attribute"

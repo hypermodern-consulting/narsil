@@ -90,7 +90,7 @@ printf 'foo bar baz\n' > "$W/bare.sh"
 so=$("$BIN" check "$W/bare.sh" 2>/dev/null)
 [ -z "$so" ] && ok || note "check stdout clean" "diagnostics leaked to stdout: '$so'"
 se=$("$BIN" check "$W/bare.sh" 2>&1 >/dev/null)
-echo "$se" | grep -qiE "bare command|ALEPH" && ok || note "check diag on stderr" "expected bare-command diagnostic on stderr"
+echo "$se" | grep -qiE "bare command|NARSIL" && ok || note "check diag on stderr" "expected bare-command diagnostic on stderr"
 
 echo "CLICHECK: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

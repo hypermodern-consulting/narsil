@@ -146,28 +146,28 @@ partitionPatternViolations config = foldr go ([], [])
         (v : suppressed, active)
     | otherwise = (suppressed, v : active)
 
-{- | Render a bare-command finding (ALEPH-B005) as a clippy-style text block,
+{- | Render a bare-command finding (NARSIL-B005) as a clippy-style text block,
 given the source path and the command's name + span.
 -}
 formatBareCommand :: Text -> (Text, Span) -> Text
 formatBareCommand src (cmd, sourceSpan) =
   let tok = locLine (spanStart sourceSpan)
    in T.unlines
-        [ "error[ALEPH-B005]: bare command not allowed: " <> cmd
+        [ "error[NARSIL-B005]: bare command not allowed: " <> cmd
         , "  --> " <> src <> ":" <> T.pack (show tok)
         , ""
         , "  Use an explicit store path for external commands:"
         , "    /nix/store/...-pkg/bin/" <> cmd
         ]
 
-{- | Render a dynamic-command finding (ALEPH-B006) as a clippy-style text block,
+{- | Render a dynamic-command finding (NARSIL-B006) as a clippy-style text block,
 given the source path and the variable's name + span.
 -}
 formatDynamicCommand :: Text -> (Text, Span) -> Text
 formatDynamicCommand src (var, sourceSpan) =
   let tok = locLine (spanStart sourceSpan)
    in T.unlines
-        [ "error[ALEPH-B006]: dynamic command not allowed: $" <> var
+        [ "error[NARSIL-B006]: dynamic command not allowed: $" <> var
         , "  --> " <> src <> ":" <> T.pack (show tok)
         , ""
         , "  Dynamic command selection is not statically analyzable."
@@ -179,14 +179,14 @@ indentBlock :: Text -> Text -> Text
 indentBlock prefix block =
   T.unlines [prefix <> line | line <- T.lines block]
 
-{- | Render package-directory violations (ALEPH-P001) as a text block listing the
+{- | Render package-directory violations (NARSIL-P001) as a text block listing the
 offending paths; @""@ when there are none.
 -}
 formatPackageViolations :: [LintPackages.PackageViolation] -> Text
 formatPackageViolations [] = ""
 formatPackageViolations violations =
   T.unlines
-    [ "ALEPH-P001: Package directories must contain a `default.nix` file:"
+    [ "NARSIL-P001: Package directories must contain a `default.nix` file:"
     , ""
     ]
     <> T.unlines (map (\violation -> "  " <> T.pack (LintPackages.pvPath violation)) violations)
@@ -196,7 +196,7 @@ bareDiagnostic :: (Text, Span) -> Diag.Diagnostic
 bareDiagnostic (cmd, sp) =
   Diag.Diagnostic
     { Diag.diagSeverity = ErrorS
-    , Diag.diagCode = Just "ALEPH-B005"
+    , Diag.diagCode = Just "NARSIL-B005"
     , Diag.diagSpan = Just sp
     , Diag.diagSummary = "bare command not allowed: " <> cmd
     , Diag.diagHelp = ["use an explicit store path for external commands"]
@@ -208,7 +208,7 @@ dynamicDiagnostic :: (Text, Span) -> Diag.Diagnostic
 dynamicDiagnostic (var, sp) =
   Diag.Diagnostic
     { Diag.diagSeverity = ErrorS
-    , Diag.diagCode = Just "ALEPH-B006"
+    , Diag.diagCode = Just "NARSIL-B006"
     , Diag.diagSpan = Just sp
     , Diag.diagSummary = "dynamic command not allowed: $" <> var
     , Diag.diagHelp = ["use a known store path or a case statement over a small allowlist"]

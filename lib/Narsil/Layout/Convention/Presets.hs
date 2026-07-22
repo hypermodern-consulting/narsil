@@ -35,7 +35,7 @@ import Narsil.Layout.ModuleKind
 --                                                                          // straylight convention
 -- ═════════════════════════════════════════════════════════════════════════════════════════════════
 
-{- | Straylight/aleph convention.
+{- | Straylight convention.
 
 Everything is a flake module. Uniform structure.
 
@@ -57,7 +57,7 @@ straylight :: Convention
 straylight =
   Convention
     { convName = "straylight"
-    , convDescription = "Straylight/aleph: module layout with kebab-case everywhere"
+    , convDescription = "Straylight: module layout with kebab-case everywhere"
     , convRules =
         [ ConventionRule
             { ruleKind = FlakeModule

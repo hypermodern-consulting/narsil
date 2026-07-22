@@ -281,21 +281,21 @@ formatNixLoc span' = maybe loc (\f -> T.pack f <> ":" <> loc) (spanFile span')
   loc = T.pack (show (locLine (spanStart span'))) <> ":" <> T.pack (show (locCol (spanStart span')))
 
 -- ── error codes ────────────────────────────────────────────────────
--- Each violation type maps to an ALEPH-Nxxx code that is stable across
+-- Each violation type maps to an NARSIL-Nxxx code that is stable across
 -- releases. Used by CI to suppress known issues and by editors to
 -- provide quickfix links.
 
 formatNixErrorCode :: ViolationType -> Text
-formatNixErrorCode VWith = "ALEPH-N001: `with` expression"
-formatNixErrorCode VRec = "ALEPH-N002: `rec` attrset"
-formatNixErrorCode VSubstituteAll = "ALEPH-N005: `substituteAll`"
-formatNixErrorCode VRawMkDerivation = "ALEPH-N006: raw `mkDerivation`"
-formatNixErrorCode VRawRunCommand = "ALEPH-N007: raw `runCommand`"
-formatNixErrorCode VRawWriteShellApplication = "ALEPH-N008: raw `writeShellApplication`"
-formatNixErrorCode VWriteShellScript = "ALEPH-N011: `writeShellScript`"
+formatNixErrorCode VWith = "NARSIL-N001: `with` expression"
+formatNixErrorCode VRec = "NARSIL-N002: `rec` attrset"
+formatNixErrorCode VSubstituteAll = "NARSIL-N005: `substituteAll`"
+formatNixErrorCode VRawMkDerivation = "NARSIL-N006: raw `mkDerivation`"
+formatNixErrorCode VRawRunCommand = "NARSIL-N007: raw `runCommand`"
+formatNixErrorCode VRawWriteShellApplication = "NARSIL-N008: raw `writeShellApplication`"
+formatNixErrorCode VWriteShellScript = "NARSIL-N011: `writeShellScript`"
 formatNixErrorCode (VLongInlineString n) =
-  "ALEPH-N012: long inline string (" <> T.pack (show n) <> " chars)"
-formatNixErrorCode (VNonLispCase name) = "ALEPH-N015: non-lisp-case binding `" <> name <> "`"
+  "NARSIL-N012: long inline string (" <> T.pack (show n) <> " chars)"
+formatNixErrorCode (VNonLispCase name) = "NARSIL-N015: non-lisp-case binding `" <> name <> "`"
 
 -- ── remediation notes ──────────────────────────────────────────────
 -- These are the full-text explanations shown to the user after the
@@ -354,7 +354,7 @@ formatNixNote VRawWriteShellApplication =
     , "    - Should be declared via the module system"
     , "    - Bypasses shell script linting and type checking"
     , ""
-    , "  Use `aleph.shell.writeShellApplication` or the nix-compile wrapper instead."
+    , "  Use your prelude's wrapped writeShellApplication instead."
     ]
 formatNixNote VWriteShellScript =
   T.unlines

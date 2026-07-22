@@ -176,27 +176,27 @@ toBashDiag scriptName v =
   bashLabel Forbidden.VBacktick = "backticks (`...`) not allowed"
 
 bashErrorCode :: Forbidden.ViolationType -> Text
-bashErrorCode Forbidden.VHeredoc = "ALEPH-B001"
-bashErrorCode Forbidden.VHereString = "ALEPH-B002"
-bashErrorCode Forbidden.VEval = "ALEPH-B003"
-bashErrorCode Forbidden.VBacktick = "ALEPH-B004"
+bashErrorCode Forbidden.VHeredoc = "NARSIL-B001"
+bashErrorCode Forbidden.VHereString = "NARSIL-B002"
+bashErrorCode Forbidden.VEval = "NARSIL-B003"
+bashErrorCode Forbidden.VBacktick = "NARSIL-B004"
 
 -- | Render one nix-lint 'NixViolation' as an LSP 'Diagnostic' (code + context).
 toNixDiag :: NixViolation -> Diagnostic
 toNixDiag NixViolation{nvType = vt, nvSpan = sp, nvContext = ctx} =
   spToDiagnostic (nixCode vt <> ": " <> ctx) sp
 
--- | The @ALEPH-N*@ rule code string for a nix-lint 'ViolationType'.
+-- | The @NARSIL-N*@ rule code string for a nix-lint 'ViolationType'.
 nixCode :: ViolationType -> Text
-nixCode VWith = "ALEPH-N001"
-nixCode VRec = "ALEPH-N002"
-nixCode VSubstituteAll = "ALEPH-N005"
-nixCode VRawMkDerivation = "ALEPH-N006"
-nixCode VRawRunCommand = "ALEPH-N007"
-nixCode VRawWriteShellApplication = "ALEPH-N008"
-nixCode VWriteShellScript = "ALEPH-N011"
-nixCode (VLongInlineString n) = "ALEPH-N012 (" <> T.pack (show n) <> " chars)"
-nixCode (VNonLispCase name) = "ALEPH-N015 (`" <> name <> "`)"
+nixCode VWith = "NARSIL-N001"
+nixCode VRec = "NARSIL-N002"
+nixCode VSubstituteAll = "NARSIL-N005"
+nixCode VRawMkDerivation = "NARSIL-N006"
+nixCode VRawRunCommand = "NARSIL-N007"
+nixCode VRawWriteShellApplication = "NARSIL-N008"
+nixCode VWriteShellScript = "NARSIL-N011"
+nixCode (VLongInlineString n) = "NARSIL-N012 (" <> T.pack (show n) <> " chars)"
+nixCode (VNonLispCase name) = "NARSIL-N015 (`" <> name <> "`)"
 
 {- | Build an error-severity LSP 'Diagnostic' from a message and a 1-based
   source 'Span', converting to 0-based LSP positions (clamped at zero).

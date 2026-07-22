@@ -183,13 +183,13 @@ forbiddenTypeLabel VEval = "eval"
 forbiddenTypeLabel VBacktick = "backtick"
 
 -- ── error codes ────────────────────────────────────────────────────
--- Stable ALEPH-Bxxx codes. B-prefix denotes bash/shell violations.
+-- Stable NARSIL-Bxxx codes. B-prefix denotes bash/shell violations.
 
 forbiddenErrorCode :: ViolationType -> Text
-forbiddenErrorCode VHeredoc = "ALEPH-B001"
-forbiddenErrorCode VHereString = "ALEPH-B002"
-forbiddenErrorCode VEval = "ALEPH-B003"
-forbiddenErrorCode VBacktick = "ALEPH-B004"
+forbiddenErrorCode VHeredoc = "NARSIL-B001"
+forbiddenErrorCode VHereString = "NARSIL-B002"
+forbiddenErrorCode VEval = "NARSIL-B003"
+forbiddenErrorCode VBacktick = "NARSIL-B004"
 
 -- ── remediation suggestions ────────────────────────────────────────
 -- Each forbidden bash construct has a suggested replacement. The text

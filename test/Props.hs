@@ -1510,7 +1510,7 @@ prop_diagnostic_render = full && minimal
   d =
     Diag.Diagnostic
       { Diag.diagSeverity = ErrorS
-      , Diag.diagCode = Just "ALEPH-N001"
+      , Diag.diagCode = Just "NARSIL-N001"
       , Diag.diagSpan = Just (Span (Loc 90 7) (Loc 90 16) (Just "flake.nix"))
       , Diag.diagSummary = "`with` expression is not allowed"
       , Diag.diagHelp = ["use `inherit (pkgs) git;` instead"]
@@ -1519,7 +1519,7 @@ prop_diagnostic_render = full && minimal
   expected =
     T.intercalate
       "\n"
-      [ "error[ALEPH-N001]: `with` expression is not allowed"
+      [ "error[NARSIL-N001]: `with` expression is not allowed"
       , "  --> flake.nix:90:7"
       , "   |"
       , "90 |   with pkgs; [ git ];"
@@ -3270,7 +3270,7 @@ prop_adv_no_dup_codes =
       fPat t = PatternLint.formatPatternViolations [PatternLint.PatternViolation t mks ""]
       allFmt = map fNix nixT ++ map fDer derT ++ map fPat patT
       codeFromLine l =
-        case T.breakOn "ALEPH-" l of
+        case T.breakOn "NARSIL-" l of
           (_, "") -> ""
           (_, rest) -> T.takeWhile (/= ':') rest
       codes = map (\f -> codeFromLine (case T.lines f of [] -> ""; l : _ -> l)) allFmt
@@ -4123,17 +4123,17 @@ prop_severity_ordering =
 prop_lsp_lint_empty :: Bool
 prop_lsp_lint_empty = null (lintFile "")
 
--- | LSP-4: lintFile detects `with` as ALEPH-N001
+-- | LSP-4: lintFile detects `with` as NARSIL-N001
 prop_lsp_lint_with :: Bool
 prop_lsp_lint_with =
   let diags = lintFile "with lib; {}"
-   in any (\d -> "ALEPH-N001" `T.isInfixOf` _message d) diags
+   in any (\d -> "NARSIL-N001" `T.isInfixOf` _message d) diags
 
--- | LSP-5: lintFile detects `rec` as ALEPH-N002
+-- | LSP-5: lintFile detects `rec` as NARSIL-N002
 prop_lsp_lint_rec :: Bool
 prop_lsp_lint_rec =
   let diags = lintFile "rec { x = 1; }"
-   in any (\d -> "ALEPH-N002" `T.isInfixOf` _message d) diags
+   in any (\d -> "NARSIL-N002" `T.isInfixOf` _message d) diags
 
 -- | LSP-6: lintFile produces no diagnostics for clean Nix
 prop_lsp_lint_clean :: Bool
@@ -4571,17 +4571,17 @@ prop_report_partition_complete =
       (sup, act) = partitionViolations defaultConfig violations
    in length sup + length act == length violations
 
--- | formatBareCommand produces output containing ALEPH-B005
+-- | formatBareCommand produces output containing NARSIL-B005
 prop_report_format_bare :: Bool
 prop_report_format_bare =
   let out = formatBareCommand "test.sh" ("curl", dummySpan)
-   in "ALEPH-B005" `T.isInfixOf` out && not (T.null out)
+   in "NARSIL-B005" `T.isInfixOf` out && not (T.null out)
 
--- | formatDynamicCommand produces output containing ALEPH-B006
+-- | formatDynamicCommand produces output containing NARSIL-B006
 prop_report_format_dynamic :: Bool
 prop_report_format_dynamic =
   let out = formatDynamicCommand "test.sh" ("cmd", dummySpan)
-   in "ALEPH-B006" `T.isInfixOf` out && not (T.null out)
+   in "NARSIL-B006" `T.isInfixOf` out && not (T.null out)
 
 -- | indentBlock prefixes every non-empty line
 prop_report_indent_block :: Bool
@@ -4597,11 +4597,11 @@ prop_report_package_empty :: Bool
 prop_report_package_empty =
   T.null (formatPackageViolations [])
 
--- | formatPackageViolations non-empty contains ALEPH-P001
+-- | formatPackageViolations non-empty contains NARSIL-P001
 prop_report_package_nonempty :: Bool
 prop_report_package_nonempty =
   let out = formatPackageViolations [dummyPackageViolation]
-   in "ALEPH-P001" `T.isInfixOf` out && not (T.null out)
+   in "NARSIL-P001" `T.isInfixOf` out && not (T.null out)
 
 -- ═════════════════════════════════════════════════════════════════════════════════════════════════
 -- Properties: CLI Check

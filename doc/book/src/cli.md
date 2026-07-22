@@ -109,9 +109,9 @@ extracts and checks every embedded bash script found in the file.
 - **Config-path validation**: detects conflicting config key prefixes
   (e.g. `config.server` vs `config.server.port`).
 - **Bare-command detection**: flags external commands that are not
-  referenced by store path (`error[ALEPH-B005]`).
+  referenced by store path (`error[NARSIL-B005]`).
 - **Dynamic-command detection**: flags `$VAR` command invocations that
-  cannot be statically analysed (`error[ALEPH-B006]`).
+  cannot be statically analysed (`error[NARSIL-B006]`).
 
 Reports a summary line and exits 0 only if there are zero errors.
 

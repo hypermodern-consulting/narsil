@@ -143,7 +143,7 @@ rule = RuleOverride
 builtinProfiles :: [BuiltinProfile]
 builtinProfiles = [strict, standard, minimal, nixpkgs, security, off]
 
--- | Full straylight/aleph conventions: everything error, lisp-case enforced.
+-- | Full straylight conventions: everything error, lisp-case enforced.
 strict :: BuiltinProfile
 strict =
   BuiltinProfile

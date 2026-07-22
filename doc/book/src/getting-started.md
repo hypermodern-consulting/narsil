@@ -53,7 +53,7 @@ Run the check:
 ```
 $ narsil check /tmp/demo.sh
 
-error[ALEPH-B005]: bare command not allowed: wget
+error[NARSIL-B005]: bare command not allowed: wget
   --> /tmp/demo.sh:8
 
   Use an explicit store path for external commands:
@@ -85,7 +85,7 @@ $ narsil check /tmp/demo.nix
 
 ✗ /tmp/demo.nix ── NIX LINT VIOLATIONS:
 
-  ALEPH-N002: rec attrset
+  NARSIL-N002: rec attrset
     rec enables non-termination and complicates static analysis.
     Use let bindings instead.
 
@@ -99,7 +99,7 @@ Found 1 shell scripts in /tmp/demo.nix
 1 total error(s)
 ```
 
-The `rec` attrset triggers `ALEPH-N002` and blocks type inference for the file. The embedded bash (`writeShellScriptBin "demo"`) was extracted and checked separately — it passed.
+The `rec` attrset triggers `NARSIL-N002` and blocks type inference for the file. The embedded bash (`writeShellScriptBin "demo"`) was extracted and checked separately — it passed.
 
 ### Running type inference on a Nix file
 
@@ -263,7 +263,7 @@ $ narsil check ./
 ✓ lib/nix/overlays/default.nix
 ✗ lib/nix/packages/hello/default.nix ── NIX LINT VIOLATIONS:
 
-  ALEPH-N002: rec attrset
+  NARSIL-N002: rec attrset
     Use let bindings instead.
 ...
   ✓  42 passed, 5 skipped, 0 failed
@@ -271,10 +271,10 @@ $ narsil check ./
   Graph violations: 0 lint, 2 layout
   lib/nix/modules/flake/gpu-broker.nix: 2 violations
 
-  ALEPH-L003: file kind could not be determined
+  NARSIL-L003: file kind could not be determined
     Add _class = "nixos" or _class = "flake" to the file.
 
-  ALEPH-L004: _class value "foo" does not match location
+  NARSIL-L004: _class value "foo" does not match location
     File is in nix/modules/flake/ but has _class = "foo"
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -519,7 +519,7 @@ overrides =
 
 ### Replacing heredoc config with emit-config
 
-Heredocs are banned unconditionally (ALEPH-B001). The migration path:
+Heredocs are banned unconditionally (NARSIL-B001). The migration path:
 
 ```bash
 # Before (will fail narsil check):
@@ -579,4 +579,4 @@ Any Nix file that uses `writeShellScript`, `writeShellScriptBin`, or `writeShell
 narsil check ./default.nix
 ```
 
-The output identifies each embedded script by name, shows any policy violations (ALEPH-B*), type errors on environment variables, bare commands, and dynamic command detection. Interpolated Nix expressions that don't resolve to store paths are flagged with a warning.
+The output identifies each embedded script by name, shows any policy violations (NARSIL-B*), type errors on environment variables, bare commands, and dynamic command detection. Interpolated Nix expressions that don't resolve to store paths are flagged with a warning.

@@ -495,7 +495,7 @@ Lists are alphabetized within logical groups:
 
 ```nix
 
-# ── aleph.script core ──────────────────────────────────────────
+# ── script core ──────────────────────────────────────────
 
 haskell-packages.aeson
 haskell-packages.async

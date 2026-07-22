@@ -1,14 +1,14 @@
 # Policy Rules
 
-narsil performs static analysis on Nix and bash code, enforcing a set of policy rules. Every violation has an error code prefixed `ALEPH-`. Rules are configured via a Dhall file (see [Configuration](#configuration)).
+narsil performs static analysis on Nix and bash code, enforcing a set of policy rules. Every violation has an error code prefixed `NARSIL-`. Rules are configured via a Dhall file (see [Configuration](#configuration)).
 
 ---
 
 ## Bash rules
 
-Bash rules (prefix `ALEPH-B`) are enforced on all inline bash scripts found within Nix files: `runCommand`, `writeShellApplication`, `writeShellScript`, and similar derivations.
+Bash rules (prefix `NARSIL-B`) are enforced on all inline bash scripts found within Nix files: `runCommand`, `writeShellApplication`, `writeShellScript`, and similar derivations.
 
-### ALEPH-B001: Heredocs
+### NARSIL-B001: Heredocs
 
 ```
 Forbidden: heredoc (<<, <<-)
@@ -26,7 +26,7 @@ Heredocs contain interpolations that cannot be statically analyzed. The content 
   cat ${pkgs.writeText "msg" ''...''}
   ```
 
-### ALEPH-B002: Here-strings
+### NARSIL-B002: Here-strings
 
 ```
 Forbidden: here-string (<<<)
@@ -42,7 +42,7 @@ echo "string" | command          # or:
 printf '%s' "string" | command
 ```
 
-### ALEPH-B003: eval
+### NARSIL-B003: eval
 
 ```
 Forbidden: eval (including builtin eval, command eval)
@@ -62,7 +62,7 @@ case "$mode" in                 # command dispatch
 esac
 ```
 
-### ALEPH-B004: Backticks
+### NARSIL-B004: Backticks
 
 ```
 Forbidden: backtick command substitution (`cmd`)
@@ -77,10 +77,10 @@ Backticks are deprecated POSIX syntax with broken nesting semantics. Nesting req
 result=$(command)
 ```
 
-### ALEPH-B005: Bare commands
+### NARSIL-B005: Bare commands
 
 ```
-error[ALEPH-B005]: bare command not allowed
+error[NARSIL-B005]: bare command not allowed
 ```
 
 Commands that are neither `/nix/store/...` paths nor shell builtins are rejected. This ensures reproducibility — every external tool must come from a Nix derivation, with its full store path visible in the source.
@@ -89,10 +89,10 @@ Shell builtins (`echo`, `printf`, `test`, `[`, `set`, `export`, `declare`, `loca
 
 **Not configurable.** Bare commands are always errors — they represent real missing-dependency bugs that cannot be safely suppressed.
 
-### ALEPH-B006: Dynamic commands
+### NARSIL-B006: Dynamic commands
 
 ```
-error[ALEPH-B006]: dynamic command not allowed
+error[NARSIL-B006]: dynamic command not allowed
 ```
 
 Commands invoked via variable expansion (`$CMD arg1 arg2`) cannot be statically verified. The analyzer cannot determine which binary will execute, so it cannot check store-path correctness.
@@ -111,12 +111,12 @@ esac
 
 ## Nix rules
 
-Nix rules (prefix `ALEPH-N`) are enforced on all `.nix` source files.
+Nix rules (prefix `NARSIL-N`) are enforced on all `.nix` source files.
 
-### ALEPH-N001: `with` expressions
+### NARSIL-N001: `with` expressions
 
 ```
-ALEPH-N001: `with` expression
+NARSIL-N001: `with` expression
 ```
 
 `with` obscures scope, breaks go-to-definition, creates shadowing hazards, and makes type inference unsound. A single `with` silently changes the meaning of every unbound variable in its body — a deeply non-local effect that defeats human readers and tooling alike.
@@ -128,10 +128,10 @@ ALEPH-N001: `with` expression
 inherit (expr) name1 name2;
 ```
 
-### ALEPH-N002: `rec` attrsets
+### NARSIL-N002: `rec` attrsets
 
 ```
-ALEPH-N002: `rec` attrset
+NARSIL-N002: `rec` attrset
 ```
 
 `rec` enables infinite loops (non-termination), complicates static analysis, makes evaluation order-dependent, and breaks referential transparency. A `rec` attrset is a miniature fixed-point that the type checker cannot reason about.
@@ -146,10 +146,10 @@ let
 in { inherit x y; }
 ```
 
-### ALEPH-N005: `substituteAll`
+### NARSIL-N005: `substituteAll`
 
 ```
-ALEPH-N005: `substituteAll`
+NARSIL-N005: `substituteAll`
 ```
 
 `substituteAll` copies all derivation dependencies into the store for a single-variable substitution. It is needlessly expensive and creates opaque runtime behavior that obfuscates data flow.
@@ -158,10 +158,10 @@ ALEPH-N005: `substituteAll`
 
 **Use instead:** `substituteInPlace` or `substitute` with explicit values.
 
-### ALEPH-N006: raw `mkDerivation`
+### NARSIL-N006: raw `mkDerivation`
 
 ```
-ALEPH-N006: raw `mkDerivation`
+NARSIL-N006: raw `mkDerivation`
 ```
 
 Direct `mkDerivation` calls bypass language-specific wrappers that provide important build phases, hooks, and type-safe paths. Raw derivations miss guardrails that prevent common packaging mistakes.
@@ -170,10 +170,10 @@ Direct `mkDerivation` calls bypass language-specific wrappers that provide impor
 
 **Use instead:** Language-specific wrappers (`stdenv.mkDerivation`, `buildPythonPackage`, etc.) or project-level prelude wrappers.
 
-### ALEPH-N007: raw `runCommand`
+### NARSIL-N007: raw `runCommand`
 
 ```
-ALEPH-N007: raw `runCommand`
+NARSIL-N007: raw `runCommand`
 ```
 
 Direct `runCommand` calls create derivations without proper package metadata and bypass build system conventions. These ad-hoc derivations lack the structure that makes packages discoverable and maintainable.
@@ -182,22 +182,22 @@ Direct `runCommand` calls create derivations without proper package metadata and
 
 **Use instead:** `runCommandWith` or a proper derivation wrapper.
 
-### ALEPH-N008: raw `writeShellApplication`
+### NARSIL-N008: raw `writeShellApplication`
 
 ```
-ALEPH-N008: raw `writeShellApplication`
+NARSIL-N008: raw `writeShellApplication`
 ```
 
 Direct `writeShellApplication` calls bypass narsil's shell script linting and type checking. Scripts should be declared through the module system so they receive automatic validation, shellcheck integration, and metadata enforcement.
 
 **Rule ID:** `no-raw-writeshellapplication`
 
-**Use instead:** The narsil module system wrapper (e.g., `aleph.shell.writeShellApplication`).
+**Use instead:** Your prelude's wrapped `writeShellApplication`.
 
-### ALEPH-N009: `or null` fallback
+### NARSIL-N009: `or null` fallback
 
 ```
-ALEPH-N009: `or null` fallback
+NARSIL-N009: `or null` fallback
 ```
 
 Implicit `or null` fallbacks silently swallow attribute errors, masking real bugs when expected fields are missing. Null values propagate through the program and surface as confusing errors far from the source.
@@ -213,10 +213,10 @@ x.y or null
 if x ? y then x.y else null
 ```
 
-### ALEPH-N010: Attribute translation calls
+### NARSIL-N010: Attribute translation calls
 
 ```
-ALEPH-N010: attribute translation call
+NARSIL-N010: attribute translation call
 ```
 
 `translateAttrs`, `mapAttrsToList`, and `mapAttrsFlatten` circumvent the type system by dynamically reshaping attribute sets. These functions should only be used in designated prelude directories where translation logic is centralized and reviewable.
@@ -225,10 +225,10 @@ ALEPH-N010: attribute translation call
 
 **Use instead:** Move translation logic to `lib/prelude/` or use statically known attribute sets.
 
-### ALEPH-N011: `writeShellScript`
+### NARSIL-N011: `writeShellScript`
 
 ```
-ALEPH-N011: `writeShellScript`
+NARSIL-N011: `writeShellScript`
 ```
 
 `writeShellScript` and `writeShellScriptBin` create shell scripts without runtime metadata: no declared name, runtime inputs, or description. They also bypass shellcheck and the `-euo pipefail` safety flags.
@@ -237,10 +237,10 @@ ALEPH-N011: `writeShellScript`
 
 **Use instead:** `writeShellApplication`, which requires explicit metadata and enables shell linting.
 
-### ALEPH-N012: Long inline strings
+### NARSIL-N012: Long inline strings
 
 ```
-ALEPH-N012: long inline string (N chars)
+NARSIL-N012: long inline string (N chars)
 ```
 
 Inline strings longer than 120 characters clutter source files, make diffs hard to read, and should be extracted to separate files for reviewability and reuse.
@@ -252,10 +252,10 @@ Inline strings longer than 120 characters clutter source files, make diffs hard 
 builtins.readFile ./data.txt
 ```
 
-### ALEPH-N015: Non-lisp-case binding
+### NARSIL-N015: Non-lisp-case binding
 
 ```
-ALEPH-N015: non-lisp-case binding `myThing`
+NARSIL-N015: non-lisp-case binding `myThing`
 ```
 
 Author-chosen names — `let` bindings — use lowercase-with-dashes in
@@ -273,10 +273,10 @@ declaration plus every reference.
 let my-thing = 1; in my-thing
 ```
 
-### ALEPH-N013: Missing `meta`
+### NARSIL-N013: Missing `meta`
 
 ```
-ALEPH-N013: missing `meta`
+NARSIL-N013: missing `meta`
 ```
 
 Derivations should include a `meta` attribute with package metadata for discoverability. Without meta, packages are invisible to search tools and downstream consumers.
@@ -292,10 +292,10 @@ meta = with lib; {
 };
 ```
 
-### ALEPH-N014: Missing `description` in meta
+### NARSIL-N014: Missing `description` in meta
 
 ```
-ALEPH-N014: missing `description` in meta
+NARSIL-N014: missing `description` in meta
 ```
 
 The `meta` attribute must contain a `description` field providing human-readable documentation of the package's purpose. Descriptions are essential for package search and audit trails.
@@ -340,12 +340,12 @@ error[E001]: File in wrong location for NixOSModule
 
 ## Package rules
 
-Package rules (prefix `ALEPH-P`) validate package directory structure.
+Package rules (prefix `NARSIL-P`) validate package directory structure.
 
-### ALEPH-P001: Missing `default.nix`
+### NARSIL-P001: Missing `default.nix`
 
 ```
-ALEPH-P001: Package directory must contain a `default.nix` file
+NARSIL-P001: Package directory must contain a `default.nix` file
 ```
 
 Every directory classified as a package must contain a `default.nix` entry point. This ensures consistent structure and makes packages discoverable by tooling.
@@ -426,27 +426,27 @@ All suppressible rules and their identifiers:
 
 | Error code  | Rule ID                              | Description                          |
 | ----------- | ------------------------------------ | ------------------------------------ |
-| ALEPH-B001  | `no-heredoc-in-inline-bash`          | Heredoc in inline bash               |
-| ALEPH-B002  | `no-heredoc-in-inline-bash`          | Here-string in inline bash           |
-| ALEPH-B003  | `no-eval`                            | `eval` usage                         |
-| ALEPH-B004  | `no-backtick`                        | Backtick command substitution        |
-| ALEPH-N001  | `with-lib`                           | `with` expression                    |
-| ALEPH-N002  | `rec-anywhere`                       | `rec` attrset                        |
-| ALEPH-N005  | `no-substitute-all`                  | `substituteAll` usage                |
-| ALEPH-N006  | `no-raw-mkderivation`                | Raw `mkDerivation` call              |
-| ALEPH-N007  | `no-raw-runcommand`                  | Raw `runCommand` call                |
-| ALEPH-N008  | `no-raw-writeshellapplication`       | Raw `writeShellApplication` call     |
-| ALEPH-N009  | `or-null-fallback`                   | `or null` implicit fallback          |
-| ALEPH-N010  | `no-translate-attrs-outside-prelude` | Attribute translation outside prelude|
-| ALEPH-N011  | `prefer-write-shell-application`     | `writeShellScript` instead of app    |
-| ALEPH-N012  | `long-inline-string`                 | Inline string > 120 chars            |
-| ALEPH-N013  | `missing-meta`                       | Derivation missing `meta`            |
-| ALEPH-N014  | `missing-description`                | `meta` missing `description`         |
-| ALEPH-N015  | `non-lisp-case`                      | Non-lisp-case `let` binding (opt-in) |
-| ALEPH-P001  | `default-nix-in-packages`            | Package directory without default.nix|
+| NARSIL-B001  | `no-heredoc-in-inline-bash`          | Heredoc in inline bash               |
+| NARSIL-B002  | `no-heredoc-in-inline-bash`          | Here-string in inline bash           |
+| NARSIL-B003  | `no-eval`                            | `eval` usage                         |
+| NARSIL-B004  | `no-backtick`                        | Backtick command substitution        |
+| NARSIL-N001  | `with-lib`                           | `with` expression                    |
+| NARSIL-N002  | `rec-anywhere`                       | `rec` attrset                        |
+| NARSIL-N005  | `no-substitute-all`                  | `substituteAll` usage                |
+| NARSIL-N006  | `no-raw-mkderivation`                | Raw `mkDerivation` call              |
+| NARSIL-N007  | `no-raw-runcommand`                  | Raw `runCommand` call                |
+| NARSIL-N008  | `no-raw-writeshellapplication`       | Raw `writeShellApplication` call     |
+| NARSIL-N009  | `or-null-fallback`                   | `or null` implicit fallback          |
+| NARSIL-N010  | `no-translate-attrs-outside-prelude` | Attribute translation outside prelude|
+| NARSIL-N011  | `prefer-write-shell-application`     | `writeShellScript` instead of app    |
+| NARSIL-N012  | `long-inline-string`                 | Inline string > 120 chars            |
+| NARSIL-N013  | `missing-meta`                       | Derivation missing `meta`            |
+| NARSIL-N014  | `missing-description`                | `meta` missing `description`         |
+| NARSIL-N015  | `non-lisp-case`                      | Non-lisp-case `let` binding (opt-in) |
+| NARSIL-P001  | `default-nix-in-packages`            | Package directory without default.nix|
 | —           | `type-check-failure`                 | Type inference error                 |
 
-Rules **ALEPH-B005** (bare commands) and **ALEPH-B006** (dynamic commands) cannot be suppressed — they represent fundamental safety properties of the analysis system.
+Rules **NARSIL-B005** (bare commands) and **NARSIL-B006** (dynamic commands) cannot be suppressed — they represent fundamental safety properties of the analysis system.
 
 Layout rules (`E001`–`E010`) are governed by the configured layout
 convention rather than per-rule severities.

@@ -352,10 +352,10 @@ def generate_report(test_cases: list[TestCase]) -> dict:
             elif r.exit_code == 0:
                 # Check if success is unexpected
                 if is_rec:
-                    entry["note"] = "rec is a forbidden Nix construct (ALEPH-N002) — success unexpected"
+                    entry["note"] = "rec is a forbidden Nix construct (NARSIL-N002) — success unexpected"
                     summary["unexpected_successes"].append(entry)
                 if is_with:
-                    entry["note"] = "with is a forbidden Nix construct (ALEPH-N001) — success unexpected"
+                    entry["note"] = "with is a forbidden Nix construct (NARSIL-N001) — success unexpected"
                     if entry not in summary["unexpected_successes"]:
                         summary["unexpected_successes"].append(entry)
                 summary["ok"].append(entry)

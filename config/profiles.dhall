@@ -23,14 +23,14 @@ let R = Rules.rule-ids
 --                                                                                         // strict
 -- ═════════════════════════════════════════════════════════════════════════════════════════════════
 --
--- Full straylight/aleph conventions.
+-- Full straylight conventions.
 -- Lisp-case identifiers, Dhall templating, prelude-only.
 -- For new straylight projects or projects that want maximum rigor.
 
 let strict
     : Profile
     = { name = "strict"
-      , description = "Full aleph conventions with lisp-case enforcement"
+      , description = "Full straylight conventions with lisp-case enforcement"
       , parent = None Text
       , rules =
         [ -- everything error by default, enable lisp-case

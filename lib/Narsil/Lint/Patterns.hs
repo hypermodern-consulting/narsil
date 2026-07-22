@@ -214,8 +214,8 @@ formatPatternLoc span' = maybe loc (\f -> T.pack f <> ":" <> loc) (spanFile span
   loc = T.pack (show (locLine (spanStart span'))) <> ":" <> T.pack (show (locCol (spanStart span')))
 
 formatPatternErrorCode :: PatternViolationType -> Text
-formatPatternErrorCode VOrNullFallback = "ALEPH-N009: `or null` fallback"
-formatPatternErrorCode VAttrTranslation = "ALEPH-N010: attribute translation call"
+formatPatternErrorCode VOrNullFallback = "NARSIL-N009: `or null` fallback"
+formatPatternErrorCode VAttrTranslation = "NARSIL-N010: attribute translation call"
 
 formatPatternNote :: PatternViolationType -> Text
 formatPatternNote VOrNullFallback =

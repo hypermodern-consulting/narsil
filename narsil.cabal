@@ -1,12 +1,18 @@
 cabal-version:      3.0
 name:               narsil
 version:            0.1.0.0
-synopsis:           Type inference for bash scripts at Nix eval time
-description:        Eliminates runtime bash bugs by catching type errors, missing variables,
-                    and policy violations during the build.
+synopsis:           A type checker, linter, and language server for Nix
+description:        Hindley-Milner type inference for the Nix expression language
+                    (row-polymorphic records, union types, a typed model of the
+                    NixOS module system) with a corpus-verified false-positive
+                    floor across all of nixpkgs, plus policy linting, embedded
+                    bash analysis, and an LSP server.
 license:            MIT
-author:             Aleph Systems
-maintainer:         dev@aleph.systems
+license-file:       LICENSE
+author:             Hypermodern Consulting
+maintainer:         https://github.com/hypermodern-consulting/narsil
+homepage:           https://github.com/hypermodern-consulting/narsil
+bug-reports:        https://github.com/hypermodern-consulting/narsil/issues
 category:           Development
 build-type:         Simple
 

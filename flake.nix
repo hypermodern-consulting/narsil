@@ -80,7 +80,7 @@
                 # that invoke the unversioned name.
                 pkgs.haskell-language-server
                 # runCommandLocal (not raw runCommand): trivial local symlink, and
-                # it keeps our own flake clean under `narsil check` (ALEPH-N007).
+                # it keeps our own flake clean under `narsil check` (NARSIL-N007).
                 (pkgs.runCommandLocal "haskell-language-server-plain" { } ''
                   mkdir -p "$out/bin"
                   ln -s ${pkgs.haskell-language-server}/bin/haskell-language-server-wrapper \

@@ -12,23 +12,23 @@
 #                                                                      // config
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Dhall configuration schema for `nix-compile` lint rules.
+Dhall configuration schema for `narsil` lint rules.
 
 # ══════════════════════════════════════════════════════════════════════════════
 #                                                                 // quick start
 # ══════════════════════════════════════════════════════════════════════════════
 
-Create `.nix-compile.dhall` in your project root:
+Create `.narsil.dhall` in your project root:
 
 ```dhall
-let NixCompile = https://raw.githubusercontent.com/.../config/package.dhall
+let Narsil = https://raw.githubusercontent.com/.../config/package.dhall
 
-in  NixCompile.Config::{
+in  Narsil.Config::{
     , profile = "standard"
     }
 ```
 
-Or copy `.nix-compile.dhall.example` from this repo.
+Or copy `.narsil.dhall.example` from this repo.
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -47,7 +47,7 @@ Or copy `.nix-compile.dhall.example` from this repo.
 
 ## // strict
 
-Full aleph conventions. Enforces:
+Full straylight conventions. Enforces:
 
 - Lisp-case identifiers (forces code through prelude)
 - Dhall for all text templating
@@ -111,11 +111,11 @@ Security-focused. Enforces:
 # ══════════════════════════════════════════════════════════════════════════════
 
 ```dhall
-let NixCompile = ./config/package.dhall
+let Narsil = ./config/package.dhall
 
-let Severity = NixCompile.Severity
+let Severity = Narsil.Severity
 
-in  NixCompile.Config::{
+in  Narsil.Config::{
     , profile = "standard"
     
     -- Ignore paths
@@ -128,16 +128,16 @@ in  NixCompile.Config::{
     -- Override specific rules
     , overrides = [
         -- Disable rec warnings entirely
-        NixCompile.override "rec-anywhere" Severity.Off
+        Narsil.override "rec-anywhere" Severity.Off
         
         -- Enable lisp-case as warning
-      , NixCompile.override "non-lisp-case" Severity.Warning
+      , Narsil.override "non-lisp-case" Severity.Warning
       
         -- Make missing-meta an error
-      , NixCompile.override "missing-meta" Severity.Error
+      , Narsil.override "missing-meta" Severity.Error
       
         -- With a reason
-      , NixCompile.override-with-reason 
+      , Narsil.override-with-reason 
           "no-substitute-all" 
           Severity.Off 
           "We don't use Dhall yet"
@@ -223,12 +223,12 @@ Available rule IDs:
 "cpp-namespace-closing-comment"
 ```
 
-Access via `NixCompile.rule-ids`:
+Access via `Narsil.rule-ids`:
 
 ```dhall
-let R = NixCompile.rule-ids
+let R = Narsil.rule-ids
 
-in [ NixCompile.override R.rec-anywhere Severity.Off ]
+in [ Narsil.override R.rec-anywhere Severity.Off ]
 ```
 
 
