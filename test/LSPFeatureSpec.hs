@@ -45,7 +45,10 @@ import Language.LSP.Protocol.Types (
   filePathToUri,
  )
 import Narsil.Core.Config (Config (..), RuleOverride (..), Severity (..), defaultConfig)
-import Narsil.Inference.Nix (builtinEnv, inferExprWithEnv)
+import Narsil.Core.Span (Loc (..), Span (..))
+import Narsil.Inference.Nix (TypeEnv (..), builtinEnv, inferExprWithEnv)
+import Narsil.Inference.Nix qualified as Infer
+import Narsil.Inference.Nix.Module qualified as Module
 import Narsil.LSP.Handlers qualified as Handlers
 import Narsil.LSP.Handlers.Cursor (inferExprAtWithEnv)
 import Narsil.LSP.Handlers.Diagnostics (diagnosticsForExpr)
@@ -53,6 +56,7 @@ import Narsil.LSP.Handlers.Features (
   completionsForExpr,
   findRef,
   inlayHintsForExpr,
+  memberCompletions,
   violationAction,
  )
 import Narsil.LSP.Handlers.Project qualified as Project
@@ -273,6 +277,52 @@ testCodeActionRenameEdit =
   diags = filter n15 (diagnosticsForExpr strictCfg "<buffer>" expr)
   actions = concatMap (violationAction (filePathToUri "/b.nix") (Just sg)) diags
 
+-- ── the panopticon: type-directed members + declaration jumps ───────
+
+{- | GUARD: dotted completion answers from the INFERRED type — a local
+record's fields with their types, the builtins record, the lib tables, and
+a module's cfg spine from its declarations.
+-}
+testMemberCompletions :: IO Bool
+testMemberCompletions =
+  holds (localFields && builtinsMembers && libMembers && cfgSpine)
+ where
+  -- txt carries the trailing dot (the buffer mid-keystroke, unparseable);
+  -- the AST is the LAST GOOD parse — exactly the handler's cache contract
+  members env goodSrc txt col =
+    let expr = parse goodSrc
+        binds = Infer.inferExprBindingsPartial env expr
+     in [(l, d) | CompletionItem{_label = l, _detail = d} <- memberCompletions env binds txt 0 col]
+  localGood = "let server = { port = 8080; hostName = \"x\"; }; in server"
+  localTxt = localGood <> "."
+  localFields =
+    lookup "port" (members builtinEnv localGood localTxt (T.length localTxt)) == Just (Just "Int")
+  builtinsMembers =
+    "stringLength" `elem` map fst (members builtinEnv "builtins" "builtins." 9)
+  libMembers = "mkIf" `elem` map fst (members builtinEnv "lib" "lib." 4)
+  modEnv = builtinEnv{envModuleParams = True}
+  modGood =
+    "{ config, lib, ... }: let cfg = config.services.canary; in { "
+      <> "options.services.canary.port = lib.mkOption { type = lib.types.int; }; "
+      <> "config.services.canary.port = cfg.port; }"
+  modTxt =
+    "{ config, lib, ... }: let cfg = config.services.canary; in { "
+      <> "options.services.canary.port = lib.mkOption { type = lib.types.int; }; "
+      <> "config.services.canary.port = cfg."
+  cfgSpine = "port" `elem` map fst (members modEnv modGood modTxt (T.length modTxt))
+
+{- | GUARD: the option-declaration span resolves — a `config.…` path finds
+the source position of its mkOption (line 2 of the module body below).
+-}
+testOptionDeclSpan :: IO Bool
+testOptionDeclSpan =
+  holds (fmap (locLine . spanStart) sp == Just 2)
+ where
+  src =
+    "{\n  options.services.canary.port = "
+      <> "lib.mkOption { type = lib.types.int; };\n  config.services.canary.port = 80;\n}"
+  sp = Module.optionDeclSpanFor ["services", "canary", "port"] (parse src)
+
 -- ── navigation (definition / references) ───────────────────────────
 
 -- | Scope graph + first declaration / first reference of `let x = 1; in x + x`.
@@ -388,6 +438,8 @@ lspFeatureTests =
   , ("lsp_completion_prefix_filters", testCompletionPrefixFilters)
   , ("lsp_completion_scoped_to_cursor", testCompletionScopedToCursor)
   , ("lsp_codeaction_rename_edit", testCodeActionRenameEdit)
+  , ("lsp_member_completions", testMemberCompletions)
+  , ("lsp_option_decl_span", testOptionDeclSpan)
   , ("lsp_nav_findref_at_use", testFindRefAtUse)
   , ("lsp_nav_findref_narrowest_wins", testFindRefNarrowestWins)
   , ("lsp_hover_survives_type_error", testHoverSurvivesTypeError)

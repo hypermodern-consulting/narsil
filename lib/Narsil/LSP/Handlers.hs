@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -Wno-missing-signatures #-}
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -46,9 +47,13 @@ import Control.Exception qualified as Exc
 import Control.Monad (join)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Char (isAlphaNum)
+import Data.Coerce (coerce)
+import Data.Foldable (toList)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (inits, nub)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Message
@@ -60,13 +65,17 @@ import Narsil.Core.Profiles qualified as Profiles
 import Narsil.Core.Safety qualified as Safety
 import Narsil.Core.Span qualified as CSpan
 import Narsil.Inference.Nix (builtinEnv)
+import Narsil.Inference.Nix qualified as Infer
 import Narsil.Inference.Nix.Environment (TypeEnv, withPkgsOracle)
+import Narsil.Inference.Nix.Module qualified as Module
 import Narsil.Inference.Nix.Type qualified as NT
 import Narsil.LSP.Handlers.Cursor (
+  bindingValueByName,
   findExprAt,
   inferExprAt,
   inferExprAtWithEnv,
   selectAtCursor,
+  selectPathAtCursor,
  )
 import Narsil.LSP.Handlers.Diagnostics (
   NixViolation (..),
@@ -84,6 +93,7 @@ import Narsil.LSP.Handlers.Features (
   findRef,
   inferOptionAtPath,
   inlayHintsForExpr,
+  memberCompletions,
   nixpkgsCompletionContext,
   noFile,
   parseErr,
@@ -106,6 +116,7 @@ import Narsil.LSP.Handlers.Project (
 import Narsil.LSP.Handlers.SemanticTokens (semanticLegend, semanticTokens)
 import Narsil.LSP.Handlers.Symbols (collectTopBindingSymbols)
 import Narsil.LSP.ProjectCache qualified as PC
+import Narsil.Layout.Edge qualified as Edge
 import Narsil.Layout.ModuleSystem qualified as MS
 import Narsil.Layout.Scope qualified as Scope
 import Narsil.Nixpkgs.Cache (
@@ -121,10 +132,16 @@ import Narsil.Nixpkgs.EvalRepl (replBackend)
 import Narsil.Nixpkgs.Index qualified as Nixpkgs
 import Narsil.Nixpkgs.Oracle (buildPkgsOracle, collectPkgsChainsAnn, pkgsAttrTypos)
 import Narsil.Nixpkgs.Warm (WarmPool, enqueueDemand, newWarmPool, swapFocus)
+import Narsil.Syntax.Annotation (srcSpanToSpan, varNameText, pattern Layer)
+import Narsil.Syntax.Parse qualified as NixParse
+import Nix.Expr.Types (Binding (..), NExprF (..), NKeyName (..))
 import Nix.Expr.Types.Annotated (NExprLoc)
+import Nix.Expr.Types.Annotated qualified as NixAnn
 import Nix.Parser (parseNixTextLoc)
+import Nix.Utils qualified as NixU
 import System.Directory (doesFileExist)
 import System.FilePath ((</>))
+import System.FilePath qualified as FP
 import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
 
@@ -362,6 +379,7 @@ documentOpenHandler notif = do
   let TNotificationMessage _ _ (DidOpenTextDocumentParams (TextDocumentItem uri _ _ txt)) = notif
   -- Single-file lints (always available, never blocks) plus best-effort nixpkgs
   -- attribute-typo diagnostics (index-gated, time-boxed).
+  _ <- liftIO (noteGoodParse uri txt)
   (cfg, env, path) <- diagCtx uri
   let baseDiags = fullLint cfg env path txt
   typos <- liftIO (maybe (pure []) (pkgsTypoDiagnostics uri) (lspSafeParse txt))
@@ -398,6 +416,7 @@ documentChangeHandler notif = do
   -- fragment as the whole buffer
   mvf <- getVirtualFile (toNormalizedUri uri)
   let txt = maybe (firstChangeText cs) virtualFileText mvf
+  _ <- liftIO (noteGoodParse uri txt)
   (cfg, env, path) <- diagCtx uri
   let diags = fullLint cfg env path txt
   sendNotification SMethod_TextDocumentPublishDiagnostics $
@@ -506,7 +525,38 @@ definitionHandler req responder = do
   withExpr uri (Position l c) expr = do
     mIdx <- liftIO $ lookupNixpkgsIndex uri
     let mHit = mIdx >>= \idx -> nixpkgsHit idx (fromIntegral l) (fromIntegral c) expr
-    maybe (scopePath uri l c expr) (emitNixpkgsLoc uri) mHit
+        li = fromIntegral l
+        ci = fromIntegral c
+    case mHit of -- CASE-OK: shape dispatch
+      Just sp -> emitNixpkgsLoc uri sp
+      Nothing ->
+        -- option-declaration jump: a `config.…` (or cfg-aliased) definition
+        -- navigates to its mkOption declaration in the same buffer
+        case optionDeclJump li ci expr of -- CASE-OK: shape dispatch
+          Just sp -> emitSpanHere uri sp
+          Nothing -> do
+            -- through-the-import jump: `dep.field` where `dep = import
+            -- ./dep.nix` opens the neighbor file at field's binding
+            mImp <- liftIO (importJump uri li ci expr)
+            maybe (scopePath uri l c expr) (uncurry emitSpanIn) mImp
+  emitSpanHere uri sp =
+    responder $
+      Right $
+        InL
+          ( Definition
+              ( InL
+                  ( Location
+                      uri
+                      ( Range
+                          (toLspPos0 (CSpan.spanStart sp))
+                          (toLspPos0 (CSpan.spanEnd sp))
+                      )
+                  )
+              )
+          )
+  emitSpanIn file sp = emitSpanHere (filePathToUri file) sp
+  toLspPos0 (CSpan.Loc ln col) =
+    Position (fromIntegral (max 0 (ln - 1))) (fromIntegral (max 0 (col - 1)))
   nixpkgsHit idx l c expr = do
     (base, key) <- selectAtCursor l c expr
     if base == "pkgs" then Nixpkgs.lookupPackage idx key else Nothing
@@ -531,6 +581,61 @@ definitionHandler req responder = do
                 (toLspPos (Scope.spanEnd (Scope.declSpan decl)))
             )
      in responder $ Right $ InL (Definition (InL loc))
+
+{- | The option-declaration jump: a cursor on a `config.…` select (or one
+aliased through a binding like @cfg = config.services.foo@) resolves to the
+SPAN of its `mkOption` declaration in the same buffer.
+-}
+optionDeclJump :: Int -> Int -> NExprLoc -> Maybe CSpan.Span
+optionDeclJump l c expr = do
+  (base, path) <- selectPathAtCursor l c expr
+  full <-
+    if base == "config"
+      then Just path
+      else do
+        v <- bindingValueByName base expr
+        pre <- configSelectPath v
+        Just (pre ++ path)
+  Module.optionDeclSpanFor full (moduleBodyOf expr)
+ where
+  configSelectPath (Layer (NSelect _ inner p))
+    | Just "config" <- symOfE inner =
+        Just [varNameText k | StaticKey k <- toList p]
+  configSelectPath _ = Nothing
+  symOfE (Layer (NSym n)) = Just (varNameText n)
+  symOfE _ = Nothing
+  moduleBodyOf (Layer (NAbs _ b)) = moduleBodyOf b
+  moduleBodyOf e = e
+
+{- | The through-the-import jump: @dep.field@ where @dep = import ./dep.nix@
+opens the neighbor file at @field@'s top-level binding.
+-}
+importJump :: Uri -> Int -> Int -> NExprLoc -> IO (Maybe (FilePath, CSpan.Span))
+importJump uri l c expr =
+  maybe (pure Nothing) resolve $ do
+    (base, path) <- selectPathAtCursor l c expr
+    key <- listToMaybe path
+    v <- bindingValueByName base expr
+    rel <- importPathOf v
+    file <- uriToFilePath uri
+    pure (FP.takeDirectory file FP.</> rel, key)
+ where
+  resolve (target, key) = do
+    parsed <- NixParse.parseNixFile target
+    pure $ either (const Nothing) (fmap (target,) . bindingSpanIn key) parsed
+  importPathOf (Layer (NApp f (Layer (NLiteralPath p))))
+    | isImportHead f = Just (coerce p)
+  importPathOf _ = Nothing
+  isImportHead (Layer (NSym n)) = varNameText n == "import"
+  isImportHead (Layer (NSelect _ _ (StaticKey k :| []))) = varNameText k == "import"
+  isImportHead _ = False
+  bindingSpanIn key e =
+    listToMaybe
+      [ annSpanToSpan pos
+      | NamedVar (StaticKey k :| _) _ pos <- Edge.topBindings e
+      , varNameText k == key
+      ]
+  annSpanToSpan p = srcSpanToSpan (NixAnn.SrcSpan p p)
 
 -- ═══════════════════════ rename ═══════════════════════
 
@@ -634,10 +739,23 @@ completionHandler req responder = do
     let li = fromIntegral l
         ci = fromIntegral c
     nixItems <- liftIO $ maybe (pure []) (nixpkgsItems txt li ci) idx
-    let scopeItems = maybe [] (\e -> completionsForExpr env txt e li ci) (lspSafeParse txt)
-    -- In a `pkgs.…` context the nixpkgs list is what's wanted; only fall back to
-    -- scope/builtin completion when we're not completing under `pkgs`.
-    responder $ Right $ InL (if null nixItems then scopeItems else nixItems)
+    mExpr <- liftIO (noteGoodParse uri txt)
+    let path = fromMaybe "<buffer>" (uriToFilePath uri)
+        env' = maybe env (moduleModeEnv env path) mExpr
+        -- THE PANOPTICON TIER: dotted chains complete from the chain's
+        -- INFERRED type — locals, cfg spines, closure-typed imports,
+        -- builtins, lib
+        members =
+          maybe
+            []
+            (\e -> memberCompletions env' (Infer.inferExprBindingsPartial env' e) txt li ci)
+            mExpr
+        scopeItems = maybe [] (\e -> completionsForExpr env' txt e li ci) mExpr
+        chosen
+          | not (null nixItems) = nixItems
+          | not (null members) = members
+          | otherwise = scopeItems
+    responder $ Right $ InL chosen
   -- Package names are pure (index keys); a package's symbols go through the eval
   -- backend — the shape template today, the nixlang compiler when it lands.
   nixpkgsItems txt li ci idx =
@@ -753,6 +871,24 @@ fullLint cfg env path txt
   -- profile-contributed, `off` ignores the world) the CLI walker honors
   | Profiles.isIgnored cfg path = []
   | otherwise = maybe [] (diagnosticsForExprWith cfg env path) (lspSafeParse txt)
+
+{-# NOINLINE lastGoodParseRef #-}
+
+{- | The LAST GOOD parse per buffer. Dotted completion fires at exactly the
+moment the buffer does NOT parse (`server.|`), so the panopticon tier
+answers from the most recent successful AST — types don't change while you
+type a field name.
+-}
+lastGoodParseRef :: IORef (Map.Map Uri NExprLoc)
+lastGoodParseRef = unsafePerformIO (newIORef Map.empty)
+
+noteGoodParse :: Uri -> Text -> IO (Maybe NExprLoc)
+noteGoodParse uri txt =
+  maybe (Map.lookup uri <$> readIORef lastGoodParseRef) record (lspSafeParse txt)
+ where
+  record e = do
+    modifyIORef' lastGoodParseRef (Map.insert uri e)
+    pure (Just e)
 
 {- | A span's file as a URI — falling back to the REQUEST's uri for spans
 whose file is absent or the parser's buffer placeholder (an expression

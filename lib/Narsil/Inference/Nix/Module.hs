@@ -41,16 +41,18 @@ module Narsil.Inference.Nix.Module (
   lookupOption,
   definitionSiteFor,
   definitionRoots,
+  optionDeclSpanFor,
 ) where
 
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NE
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (mapMaybe)
+import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
+import Narsil.Core.Span (Span)
 import Narsil.Inference.Nix.Type
-import Narsil.Syntax.Annotation (varNameText, pattern Layer)
+import Narsil.Syntax.Annotation (srcSpanToSpan, varNameText, pattern Layer)
 import Nix.Expr.Types (
   Antiquoted (..),
   Binding (..),
@@ -60,6 +62,7 @@ import Nix.Expr.Types (
   NString (..),
  )
 import Nix.Expr.Types.Annotated (NExprLoc)
+import Nix.Expr.Types.Annotated qualified as NixA
 
 -- ═════════════════════════════════════════════════════════════════════════════════════════════════
 -- the option tree
@@ -127,6 +130,45 @@ declaredOptions body = case peel body of -- CASE-OK: shape dispatch
     , k == "options" =
         declsAt rest v
   optionBindings _ = []
+
+{- | The source span of the DECLARATION for an option path — where its
+`mkOption` (or enable\/package shorthand) lives. The panopticon jump: a
+cursor on a `config.…` definition navigates to the declaration.
+-}
+optionDeclSpanFor :: [Text] -> NExprLoc -> Maybe Span
+optionDeclSpanFor path body = case peel body of -- CASE-OK: shape dispatch
+  Layer (NSet _ bindings) -> listToMaybe (concatMap fromBinding bindings)
+  _ -> Nothing
+ where
+  peel (Layer (NLet _ e)) = peel e
+  peel (Layer (NWith _ e)) = peel e
+  peel (Layer (NAssert _ e)) = peel e
+  peel e = e
+  fromBinding (NamedVar bpath v pos)
+    | (k : rest) <- staticPath bpath
+    , k == "options"
+    , Just remaining <- stripPrefixKeys rest path =
+        walk remaining v pos
+  fromBinding _ = []
+  -- descend nested attrsets \/ dotted paths toward the leaf
+  walk [] v pos
+    | Just _ <- optionLeaf v = [posSpan pos]
+    | otherwise = []
+  walk remaining (Layer (NSet _ bindings)) _ =
+    concat
+      [ maybe [] (\rest' -> walk rest' inner pos') (stripPrefixKeys ks remaining)
+      | NamedVar bpath' inner pos' <- bindings
+      , let ks = staticPath bpath'
+      , not (null ks)
+      ]
+  walk _ _ _ = []
+  posSpan p = srcSpanToSpan (NixA.SrcSpan p p)
+
+-- | strip @pre@ from the front of @xs@ ('Nothing' when it is not a prefix)
+stripPrefixKeys :: [Text] -> [Text] -> Maybe [Text]
+stripPrefixKeys [] xs = Just xs
+stripPrefixKeys (p : ps) (x : xs) | p == x = stripPrefixKeys ps xs
+stripPrefixKeys _ _ = Nothing
 
 -- | the static keys of a binding path ([] if any key is dynamic)
 staticPath :: NonEmpty (NKeyName NExprLoc) -> [Text]

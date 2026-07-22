@@ -23,10 +23,13 @@ module Narsil.LSP.Handlers.Cursor (
   inferExprAtWithEnv,
   exprName,
   selectAtCursor,
+  selectPathAtCursor,
+  bindingValueByName,
 )
 where
 
 import Control.Applicative ((<|>))
+import Data.Foldable (toList)
 import Data.List (find)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Maybe (fromMaybe, listToMaybe, mapMaybe, maybeToList)
@@ -174,6 +177,45 @@ bindingValueAt cl cc = go
      in if bl == cl && cc >= bc && cc <= bc + T.length n then Just v else Nothing
   named _ = Nothing
   posToSpan' p = srcSpanToSpan (Nix.SrcSpan p p)
+
+{- | The innermost select under the 0-based cursor with a SYMBOL base:
+@(base, full static key path)@ — @config.services.foo.port@ under the
+cursor yields @("config", ["services","foo","port"])@.
+-}
+selectPathAtCursor :: Int -> Int -> NExprLoc -> Maybe (Text, [Text])
+selectPathAtCursor l c = go
+ where
+  targetLine = l + 1
+  targetCol = c + 1
+  contains (Span (Loc sl sc) (Loc el ec) _) =
+    (sl < targetLine || (sl == targetLine && sc <= targetCol))
+      && (el > targetLine || (el == targetLine && ec >= targetCol))
+  spanOf (LayerAnn sp _) = srcSpanToSpan sp
+  kids (Layer ef) = childExprs ef
+  go e
+    | not (contains (spanOf e)) = Nothing
+    | otherwise = maybe (thisSelect e) Just (listToMaybe (mapMaybe go (kids e)))
+  thisSelect (Layer (NSelect _ (Layer (NSym base)) path)) =
+    Just (varNameText base, staticKeys path)
+  thisSelect _ = Nothing
+  staticKeys p = [varNameText k | StaticKey k <- toList p]
+
+{- | The VALUE of the (let\/attrset) binding with the given name, first match
+in a top-down walk — the "what does @dep@ stand for" question behind the
+through-the-import and cfg-alias jumps.
+-}
+bindingValueByName :: Text -> NExprLoc -> Maybe NExprLoc
+bindingValueByName name = go
+ where
+  go node@(Layer e) =
+    listToMaybe (here e) <|> listToMaybe (mapMaybe go (childExprs (unwrapB node)))
+  unwrapB (LayerAnn _ e) = e
+  here (NLet bindings _) = mapMaybe named bindings
+  here (NSet _ bindings) = mapMaybe named bindings
+  here _ = []
+  named (NamedVar (StaticKey k :| []) v _)
+    | varNameText k == name = Just v
+  named _ = Nothing
 
 {- | The identifier an expression refers to: a bare symbol or the final
   static key of a select. 'Nothing' for anything else.

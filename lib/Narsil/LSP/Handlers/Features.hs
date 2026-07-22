@@ -26,6 +26,7 @@ module Narsil.LSP.Handlers.Features (
   toLspPos,
   -- completion
   completionsForExpr,
+  memberCompletions,
   PkgsCtx (..),
   nixpkgsCompletionContext,
   pkgNameCompletions,
@@ -45,17 +46,20 @@ module Narsil.LSP.Handlers.Features (
 where
 
 import Control.Applicative ((<|>))
+import Control.Monad (foldM)
 import Data.Char (isAlphaNum)
-import Data.List (nub, sortOn)
+import Data.List (find, nub, sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Map.Strict qualified as Map
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Language.LSP.Protocol.Types
 import Narsil.Core.Span (Loc (..), Span (..))
 import Narsil.Inference.Nix (TypeEnv (..), builtinEnv)
 import Narsil.Inference.Nix qualified as Infer
+import Narsil.Inference.Nix.Builtins (builtinSchemeTable)
+import Narsil.Inference.Nix.Lib (libSchemeTable)
 import Narsil.Inference.Nix.Type qualified as NT
 import Narsil.LSP.Handlers.Cursor (childExprs, exprName, findExprAt)
 import Narsil.Layout.ModuleSystem qualified as MS
@@ -157,6 +161,74 @@ prefixAtCursor txt l c = do
  where
   ctxOf ([], partial) = Just partial
   ctxOf _ = Nothing
+
+{- | THE PANOPTICON COMPLETION: the cursor sits after a dotted chain
+(@server.@, @cfg.@, @builtins.@, @dep.@ where @dep = import ./dep.nix@) and
+the members come from the chain's INFERRED TYPE — the checker answering
+"what fields does this thing have", which is exactly what a type checker is
+for. Resolution: the chain root among the (partial) bindings first — local
+lets, cfg spines from module declarations, closure-typed imports — then the
+env's monotypes (the @builtins@ record); @lib.@ serves its scheme tables;
+@pkgs.@ stands down (the eval backend owns it). Remaining segments walk
+record fields; each item carries its field's pretty type.
+-}
+memberCompletions ::
+  TypeEnv -> [Infer.Binding] -> Text -> Int -> Int -> [CompletionItem]
+memberCompletions env binds txt l c = fromMaybe [] $ do
+  line <- safeIx l (T.lines txt)
+  chainItems (chainBeforeCursor (T.take c line))
+ where
+  chainItems ([], _) = Nothing
+  chainItems ("pkgs" : _, _) = Nothing
+  chainItems (["lib"], pfx) = Just (libMemberItems pfx)
+  chainItems (root : rest, pfx) = do
+    t0 <- rootType root
+    t <- foldM stepField t0 rest
+    Just (fieldItems pfx t)
+  rootType n =
+    (Infer.bindType <$> find ((== n) . Infer.bindName) binds)
+      <|> (schemeBody <$> Map.lookup n (envBindings env))
+  schemeBody (NT.Forall _ t) = t
+  stepField t k = case t of -- CASE-OK: shape dispatch
+    NT.TRec fields _ -> fst <$> Map.lookup k fields
+    NT.TUnion ts -> listToMaybe (mapMaybe (`stepField` k) ts)
+    _ -> Nothing
+  fieldItems pfx t = case t of -- CASE-OK: shape dispatch
+    NT.TRec fields _ ->
+      [ mkCompletionItem k (Just CompletionItemKind_Field) (Just (NT.prettyType ft))
+      | (k, (ft, _)) <- Map.toList fields
+      , pfx `T.isPrefixOf` k
+      ]
+    NT.TUnion ts -> nub (concatMap (fieldItems pfx) ts)
+    NT.TDerivation ->
+      [ mkCompletionItem k (Just CompletionItemKind_Field) (Just "derivation attribute")
+      | k <- derivationTemplateAttrs
+      , pfx `T.isPrefixOf` k
+      ]
+    _ -> []
+  libMemberItems pfx =
+    [ mkCompletionItem k (Just CompletionItemKind_Function) (Just (NT.prettyScheme s))
+    | (k, s) <- Map.toList (Map.union libSchemeTable builtinSchemeTable)
+    , pfx `T.isPrefixOf` k
+    ]
+
+-- | the attrs every mkDerivation output carries (the eval backend's tier-1 floor)
+derivationTemplateAttrs :: [Text]
+derivationTemplateAttrs =
+  [ "drvPath"
+  , "meta"
+  , "name"
+  , "out"
+  , "outPath"
+  , "outputs"
+  , "override"
+  , "overrideAttrs"
+  , "passthru"
+  , "pname"
+  , "src"
+  , "system"
+  , "version"
+  ]
 
 -- | the names lexically in scope at the cursor, as completion items
 scopeCompletions :: NExprLoc -> Text -> Int -> Int -> [CompletionItem]
